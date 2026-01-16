@@ -3,7 +3,8 @@ import SwiftUI
 struct ServiceRecordsView: View {
     let records: [ServiceRecord]
     let specificRecords: [DatabaseService.SpecificRecord] // Новые записи из specific_records
-    @Binding var searchText: String
+    let searchText: String
+    let onSearchTextChange: (String) -> Void
     let isLoading: Bool
     let totalCount: Int
     let categoryName: String
@@ -55,9 +56,9 @@ struct ServiceRecordsView: View {
             if allRecords.isEmpty && !isLoading {
                 EmptyStateView(
                     icon: "doc.text.magnifyingglass",
-                    title: totalCount == 0 ? "Записей пока нет" : "Ничего не найдено",
+                    title: totalCount == 0 ? "Специфичных данных пока нет" : "Ничего не найдено",
                     message: totalCount == 0
-                        ? "Записи по категории \"\(categoryName)\" появятся здесь после импорта"
+                        ? "Они появятся после импорта или добавления"
                         : "Попробуйте изменить запрос",
                     actionTitle: nil,
                     action: nil
@@ -83,7 +84,13 @@ struct ServiceRecordsView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Поиск по номеру двигателя, данным, листу")
+        .searchable(text: Binding(
+            get: { searchText },
+            set: { newValue in
+                // Вызываем напрямую - изменение произойдет после завершения рендера
+                onSearchTextChange(newValue)
+            }
+        ), prompt: "Поиск по номеру двигателя, данным, листу")
     }
     
     private func formatDate(_ date: Date) -> String {
@@ -213,8 +220,8 @@ private struct RecordDisplayItem: Identifiable {
                         record.data["SERIAL_CODE"] ?? 
                         record.data.values.first ?? ""
         
-        // Имя листа добавляется в данные при загрузке
-        let sheetName = record.data["_SHEET_NAME"] ?? 
+        // Имя категории добавляется в данные при загрузке
+        let sheetName = record.data["_CATEGORY_NAME"] ?? 
                        record.data["ЛИСТ"] ?? 
                        record.data["SHEET"] ?? 
                        "Специфичный"

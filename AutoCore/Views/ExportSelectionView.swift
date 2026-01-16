@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ExportSelectionView: View {
     @Binding var isPresented: Bool
-    let specificSheets: [DatabaseService.SpecificSheet]
+    let specificCategories: [DatabaseService.SpecificCategory]
     let onExport: (Set<Int64>) -> Void
     
     @State private var selectedSheetIDs: Set<Int64> = []
@@ -32,34 +32,34 @@ struct ExportSelectionView: View {
                     .padding(.horizontal)
                     .padding(.top)
                 
-                if specificSheets.isEmpty {
-                    Text("Нет специфичных листов для выбора")
+                if specificCategories.isEmpty {
+                    Text("Нет специфичных категорий для выбора")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding()
                 } else {
-                    Text("Выберите специфичные листы для экспорта:")
+                    Text("Выберите специфичные категории для экспорта:")
                         .font(.headline)
                         .padding(.horizontal)
                     
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(specificSheets, id: \.id) { sheet in
+                            ForEach(specificCategories, id: \.id) { category in
                                 Toggle(isOn: Binding(
-                                    get: { selectedSheetIDs.contains(sheet.id) },
+                                    get: { selectedSheetIDs.contains(category.id) },
                                     set: { isSelected in
                                         if isSelected {
-                                            selectedSheetIDs.insert(sheet.id)
+                                            selectedSheetIDs.insert(category.id)
                                         } else {
-                                            selectedSheetIDs.remove(sheet.id)
+                                            selectedSheetIDs.remove(category.id)
                                         }
                                     }
                                 )) {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(sheet.name)
+                                        Text(category.name)
                                             .font(.body)
                                         
-                                        Text("Создан: \(formatDate(sheet.createdAt))")
+                                        Text("Создан: \(formatDate(category.createdAt))")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -84,25 +84,25 @@ struct ExportSelectionView: View {
                 Spacer()
                 
                 Button("Экспортировать все") {
-                    let allIDs = Set(specificSheets.map { $0.id })
+                    let allIDs = Set(specificCategories.map { $0.id })
                     onExport(allIDs)
                     isPresented = false
                 }
-                .disabled(specificSheets.isEmpty)
+                .disabled(specificCategories.isEmpty)
                 
                 Button("Экспортировать выбранные") {
                     onExport(selectedSheetIDs)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(selectedSheetIDs.isEmpty && !specificSheets.isEmpty)
+                .disabled(selectedSheetIDs.isEmpty && !specificCategories.isEmpty)
             }
             .padding()
         }
         .frame(width: 600, height: 500)
         .onAppear {
             // По умолчанию выбираем все
-            selectedSheetIDs = Set(specificSheets.map { $0.id })
+            selectedSheetIDs = Set(specificCategories.map { $0.id })
         }
     }
     

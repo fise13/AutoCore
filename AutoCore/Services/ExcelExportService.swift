@@ -20,27 +20,89 @@ final class ExcelExportService {
         let specificSheetsCount: Int
     }
     
-    /// Экспортирует все данные из БД в Excel файл
-    /// 
-    /// Структура файла:
-    /// 1. Для каждого двигателя отдельный лист (BRAND_ENGINECODE) - ВСЕ автоматически
-    /// 2. Лист "ПРОДАННЫЕ" со всеми проданными моторами
-    /// 3. Специфичные листы из specific_records (только выбранные)
+    /// Экспортирует данные из БД в Excel файл с настройками
     ///
     /// - Parameters:
     ///   - database: Сервис базы данных
     ///   - url: URL для сохранения файла
-    ///   - selectedSpecificSheetIDs: ID специфичных листов для экспорта (nil = все)
+    ///   - settings: Настройки экспорта
+    ///   - currentFilters: Текущие фильтры (если нужно учитывать)
     /// - Returns: Результат экспорта со статистикой
     /// - Throws: ExportError если не удалось создать файл или нет данных
+    func export(
+        database: DatabaseService,
+        to url: URL,
+        settings: ExportSettings,
+        currentFilters: ExportSettingsView.CurrentFilters? = nil
+    ) throws -> ExportResult {
+        return try exportWithSettings(
+            database: database,
+            to: url,
+            settings: settings,
+            currentFilters: currentFilters
+        )
+    }
+    
+    /// Старый метод для обратной совместимости
     func export(database: DatabaseService, to url: URL, selectedSpecificSheetIDs: Set<Int64>? = nil) throws -> ExportResult {
-        // Загружаем все данные из БД
-        let allMotors = try database.fetchMotors(filter: DatabaseService.MotorFilter(availability: .all), limit: nil, offset: 0)
-        let engines = try database.fetchEngines(brandID: nil)
+        // Создаем настройки по умолчанию
+        var settings = ExportSettings()
+        settings.includeSoldMotors = true
+        settings.includeAvailableMotors = true
+        settings.selectedSpecificCategoryIDs = selectedSpecificSheetIDs ?? []
+        return try exportWithSettings(database: database, to: url, settings: settings, currentFilters: nil)
+    }
+    
+    /// Основной метод экспорта с настройками
+    private func exportWithSettings(
+        database: DatabaseService,
+        to url: URL,
+        settings: ExportSettings,
+        currentFilters: ExportSettingsView.CurrentFilters?
+    ) throws -> ExportResult {
+        // Строим фильтр на основе настроек и текущих фильтров
+        var motorFilter = DatabaseService.MotorFilter()
+        
+        if let filters = currentFilters, settings.respectCurrentFilters {
+            motorFilter.searchText = filters.searchText
+            motorFilter.availability = filters.availabilityFilter
+            motorFilter.brandID = filters.brandID
+            motorFilter.engineID = filters.engineID
+        } else {
+            // Если не учитываем фильтры, но нужно выбрать только проданные или только в наличии
+            if settings.includeSoldMotors && !settings.includeAvailableMotors {
+                motorFilter.availability = .sold
+            } else if !settings.includeSoldMotors && settings.includeAvailableMotors {
+                motorFilter.availability = .available
+            } else if settings.includeSoldMotors && settings.includeAvailableMotors {
+                motorFilter.availability = .all
+            } else {
+                // Оба выключены - экспортируем только специфичные категории
+                motorFilter.availability = .all // Но потом отфильтруем
+            }
+        }
+        
+        // Загружаем данные из БД с учетом фильтров
+        let allMotors = try database.fetchMotors(filter: motorFilter, limit: nil, offset: 0)
+        let engines = try database.fetchEngines(brandID: motorFilter.brandID)
         let brands = try database.fetchBrands()
         
+        // Фильтруем моторы по настройкам
+        var motorsToExport = allMotors
+        
+        if !settings.includeSoldMotors && !settings.includeAvailableMotors {
+            // Оба выключены - только специфичные категории
+            motorsToExport = []
+        } else if !settings.includeSoldMotors {
+            // Исключаем проданные
+            motorsToExport = allMotors.filter { $0.soldDate == nil }
+        } else if !settings.includeAvailableMotors {
+            // Только проданные
+            motorsToExport = allMotors.filter { $0.soldDate != nil }
+        }
+        
         // Проверяем, есть ли данные для экспорта
-        if allMotors.isEmpty && engines.isEmpty {
+        if motorsToExport.isEmpty && engines.isEmpty && settings.selectedSpecificCategoryIDs.isEmpty {
             throw ExportError.noData
         }
         
@@ -61,9 +123,11 @@ final class ExcelExportService {
         var sheetId = 1
         var relationshipId = 1
         
-        // 1. ЛИСТЫ ДЛЯ КАЖДОГО ДВИГАТЕЛЯ
-        // Группируем моторы по двигателям
-        let motorsByEngine = Dictionary(grouping: allMotors) { $0.engineID }
+        // 1. ЛИСТЫ ДЛЯ МОТОРОВ
+        if settings.includeAvailableMotors || settings.includeSoldMotors {
+            if settings.sheetStructure == .separateByEngine {
+                // Отдельные листы по двигателям
+                let motorsByEngine = Dictionary(grouping: motorsToExport) { $0.engineID }
         
         // Сортируем двигатели для предсказуемости (по бренду, затем по коду)
         // Это гарантирует одинаковый порядок листов при каждом экспорте
@@ -76,94 +140,104 @@ final class ExcelExportService {
             return engine1.code < engine2.code
         }
         
-        for engine in sortedEngines {
-            guard let motors = motorsByEngine[engine.id], !motors.isEmpty else { continue }
-            
-            let brand = brands.first(where: { $0.id == engine.brandID })
-            // Имя листа: BRAND_ENGINECODE (например: SUBARU_EJ253)
-            let sheetName = makeSheetName(brand: brand?.name ?? "", engineCode: engine.code)
-            
-            // Стандартные колонки для всех листов двигателей
-            let headers = [
-                "НОМЕР ДВИГАТЕЛЯ",
-                "КОМПЛЕКТАЦИЯ",
-                "ОСОБЫЕ ОТМЕТКИ",
-                "КОЛ-ВО",
-                "КОРОБКА",
-                "ДАТА ПРИХОДА",
-                "ДАТА ПРОДАЖИ"
-            ]
-            
-            // Сортируем моторы по дате прихода (новые сверху)
-            // В листе присутствуют ВСЕ моторы этого двигателя (и проданные, и в наличии)
-            let sortedMotors = motors.sorted { motor1, motor2 in
-                motor1.arrivalDate > motor2.arrivalDate
+                for engine in sortedEngines {
+                    guard let motors = motorsByEngine[engine.id], !motors.isEmpty else { continue }
+                    
+                    let brand = brands.first(where: { $0.id == engine.brandID })
+                    let sheetName = makeSheetName(brand: brand?.name ?? "", engineCode: engine.code)
+                    
+                    let headers = [
+                        "НОМЕР ДВИГАТЕЛЯ",
+                        "КОМПЛЕКТАЦИЯ",
+                        "ОСОБЫЕ ОТМЕТКИ",
+                        "КОЛ-ВО",
+                        "КОРОБКА",
+                        "ДАТА ПРИХОДА",
+                        "ДАТА ПРОДАЖИ"
+                    ]
+                    
+                    let sortedMotors = motors.sorted { $0.arrivalDate > $1.arrivalDate }
+                    let rows = [headers] + sortedMotors.map { motorRow($0) }
+                    
+                    sheets.append(SheetData(
+                        id: sheetId,
+                        relationshipId: relationshipId,
+                        name: sheetName,
+                        rows: rows
+                    ))
+                    
+                    sheetId += 1
+                    relationshipId += 1
+                }
+            } else {
+                // Один общий лист
+                let headers = [
+                    "БРЕНД",
+                    "ДВИГАТЕЛЬ",
+                    "НОМЕР ДВИГАТЕЛЯ",
+                    "КОМПЛЕКТАЦИЯ",
+                    "ОСОБЫЕ ОТМЕТКИ",
+                    "КОЛ-ВО",
+                    "КОРОБКА",
+                    "ДАТА ПРИХОДА",
+                    "ДАТА ПРОДАЖИ"
+                ]
+                
+                let sortedMotors = motorsToExport.sorted { $0.arrivalDate > $1.arrivalDate }
+                let rows = [headers] + sortedMotors.map { singleSheetMotorRow($0, brands: brands, engines: engines) }
+                
+                sheets.append(SheetData(
+                    id: sheetId,
+                    relationshipId: relationshipId,
+                    name: "В НАЛИЧИИ",
+                    rows: rows
+                ))
+                
+                sheetId += 1
+                relationshipId += 1
             }
-            
-            let rows = [headers] + sortedMotors.map { motorRow($0) }
-            
-            sheets.append(SheetData(
-                id: sheetId,
-                relationshipId: relationshipId,
-                name: sheetName,
-                rows: rows
-            ))
-            
-            sheetId += 1
-            relationshipId += 1
         }
         
-        // 2. ЛИСТ "ПРОДАННЫЕ"
-        // Содержит ТОЛЬКО моторы, у которых sold_date != null
-        let soldMotors = allMotors.filter { $0.soldDate != nil }
-            .sorted { motor1, motor2 in
-                guard let date1 = motor1.soldDate, let date2 = motor2.soldDate else { return false }
-                return date1 > date2 // Отсортировано по ДАТЕ ПРОДАЖИ (новые сверху)
+        // 2. ЛИСТ "ПРОДАННЫЕ" (только если включено в настройках)
+        if settings.includeSoldMotors {
+            let soldMotors = motorsToExport.filter { $0.soldDate != nil }
+                .sorted { motor1, motor2 in
+                    guard let date1 = motor1.soldDate, let date2 = motor2.soldDate else { return false }
+                    return date1 > date2
+                }
+            
+            if !soldMotors.isEmpty {
+                let soldHeaders = [
+                    "БРЕНД",
+                    "ДВИГАТЕЛЬ",
+                    "НОМЕР ДВИГАТЕЛЯ",
+                    "КОМПЛЕКТАЦИЯ",
+                    "ОСОБЫЕ ОТМЕТКИ",
+                    "КОЛ-ВО",
+                    "КОРОБКА",
+                    "ДАТА ПРИХОДА",
+                    "ДАТА ПРОДАЖИ"
+                ]
+                
+                let soldRows = [soldHeaders] + soldMotors.map { soldMotorRow($0) }
+                
+                sheets.append(SheetData(
+                    id: sheetId,
+                    relationshipId: relationshipId,
+                    name: "ПРОДАННЫЕ",
+                    rows: soldRows
+                ))
+                
+                sheetId += 1
+                relationshipId += 1
             }
-        
-        if !soldMotors.isEmpty {
-            // Колонки включают БРЕНД и ДВИГАТЕЛЬ для удобства
-            let soldHeaders = [
-                "БРЕНД",
-                "ДВИГАТЕЛЬ",
-                "НОМЕР ДВИГАТЕЛЯ",
-                "КОМПЛЕКТАЦИЯ",
-                "ОСОБЫЕ ОТМЕТКИ",
-                "КОЛ-ВО",
-                "КОРОБКА",
-                "ДАТА ПРИХОДА",
-                "ДАТА ПРОДАЖИ"
-            ]
-            
-            let soldRows = [soldHeaders] + soldMotors.map { soldMotorRow($0) }
-            
-            sheets.append(SheetData(
-                id: sheetId,
-                relationshipId: relationshipId,
-                name: "ПРОДАННЫЕ",
-                rows: soldRows
-            ))
-            
-            sheetId += 1
-            relationshipId += 1
         }
         
-        // 3. СПЕЦИФИЧНЫЕ ЛИСТЫ
-        // Каждый специфичный лист экспортируется отдельно
-        // Структура колонок формируется динамически из тех полей, которые пользователь задал при импорте
-        // Экспортируются только выбранные пользователем листы
-        let allSpecificSheets = try database.fetchAllSpecificSheets()
-        let specificSheetsToExport: [DatabaseService.SpecificSheet]
+        // 3. СПЕЦИФИЧНЫЕ КАТЕГОРИИ (только выбранные в настройках)
+        let allCategories = try database.fetchAllSpecificCategories()
+        let categoriesToExport = allCategories.filter { settings.selectedSpecificCategoryIDs.contains($0.id) }
         
-        if let selectedIDs = selectedSpecificSheetIDs {
-            // Экспортируем только выбранные
-            specificSheetsToExport = allSpecificSheets.filter { selectedIDs.contains($0.id) }
-        } else {
-            // Экспортируем все (для обратной совместимости)
-            specificSheetsToExport = allSpecificSheets
-        }
-        
-        let specificSheetsData = try fetchSpecificSheets(database: database, sheetIDs: Set(specificSheetsToExport.map { $0.id }))
+        let specificSheetsData = try fetchSpecificCategories(database: database, categoryIDs: Set(categoriesToExport.map { $0.id }))
         for specificSheet in specificSheetsData {
             // Имя листа = имя категории (например: РЕМОНТ, ПОСЛЕ ДЭНА)
             let sheetName = makeSheetName(name: specificSheet.name)
@@ -186,11 +260,13 @@ final class ExcelExportService {
         // Создаем Excel файл
         try buildExcelFile(sheets: sheets, archive: archive)
         
+        let soldMotorsCount = motorsToExport.filter { $0.soldDate != nil }.count
+        
         return ExportResult(
             fileURL: url,
             sheetsCount: sheets.count,
-            motorsCount: allMotors.count,
-            soldMotorsCount: soldMotors.count,
+            motorsCount: motorsToExport.count,
+            soldMotorsCount: soldMotorsCount,
             specificSheetsCount: specificSheetsData.count
         )
     }
@@ -276,6 +352,26 @@ final class ExcelExportService {
         ]
     }
     
+    /// Создает строку для мотора в общем листе
+    private func singleSheetMotorRow(_ motor: Motor, brands: [Brand], engines: [Engine]) -> [String] {
+        // Получаем engine, затем brand через engine.brandID
+        let engine = engines.first(where: { $0.id == motor.engineID })
+        let brand = engine.flatMap { eng in brands.first(where: { $0.id == eng.brandID }) }?.name ?? ""
+        let engineCode = engine?.code ?? ""
+        
+        return [
+            brand,
+            engineCode,
+            motor.serialCode,
+            motor.configuration.isEmpty ? "" : motor.configuration,
+            motor.notes.isEmpty ? "" : motor.notes,
+            "\(motor.quantity)",
+            motor.transmission.isEmpty ? "" : motor.transmission,
+            formatDate(motor.arrivalDate),
+            formatDate(motor.soldDate)
+        ]
+    }
+    
     /// Форматирует дату в локальном формате (dd.MM.yyyy)
     /// Пустые значения остаются пустыми
     private func formatDate(_ date: Date?) -> String {
@@ -285,20 +381,20 @@ final class ExcelExportService {
     
     // MARK: - Specific Sheets
     
-    private func fetchSpecificSheets(database: DatabaseService, sheetIDs: Set<Int64>? = nil) throws -> [SpecificSheetData] {
-        // Получаем специфичные листы (все или только выбранные)
-        let allSheets = try database.fetchAllSpecificSheets()
-        let sheets: [DatabaseService.SpecificSheet]
-        if let sheetIDs = sheetIDs {
-            sheets = allSheets.filter { sheetIDs.contains($0.id) }
+    private func fetchSpecificCategories(database: DatabaseService, categoryIDs: Set<Int64>? = nil) throws -> [SpecificSheetData] {
+        // Получаем специфичные категории (все или только выбранные)
+        let allCategories = try database.fetchAllSpecificCategories()
+        let categories: [DatabaseService.SpecificCategory]
+        if let categoryIDs = categoryIDs {
+            categories = allCategories.filter { categoryIDs.contains($0.id) }
         } else {
-            sheets = allSheets
+            categories = allCategories
         }
         
         var result: [SpecificSheetData] = []
         
-        for sheet in sheets {
-            let records = try database.fetchSpecificRecords(sheetID: sheet.id)
+        for category in categories {
+            let records = try database.fetchSpecificRecordsByCategoryID(categoryID: category.id, searchText: "")
             
             if records.isEmpty {
                 continue
@@ -338,7 +434,7 @@ final class ExcelExportService {
                 rows.append(row)
             }
             
-            result.append(SpecificSheetData(name: sheet.name, rows: rows))
+            result.append(SpecificSheetData(name: category.name, rows: rows))
         }
         
         return result

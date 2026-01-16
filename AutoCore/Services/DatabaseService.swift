@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-final class DatabaseService {
+nonisolated(unsafe) final class DatabaseService {
     struct MotorFilter: Hashable {
         var searchText: String = ""
         var availability: MotorAvailabilityFilter = .all
@@ -439,6 +439,33 @@ final class DatabaseService {
         }
     }
     
+    // MARK: - Audit Log Methods
+    
+    func insertAuditLog(
+        eventType: String,
+        entityType: String,
+        entityID: Int64,
+        payload: [String: Any]
+    ) throws {
+        let jsonData = try JSONSerialization.data(withJSONObject: payload)
+        let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
+        
+        try inTransaction {
+            try executeUnlocked(
+                sql: """
+                INSERT INTO audit_log (event_type, entity_type, entity_id, payload_json, created_at)
+                VALUES (?, ?, ?, ?, datetime('now'));
+                """,
+                bindings: [
+                    .text(eventType),
+                    .text(entityType),
+                    .int64(entityID),
+                    .text(jsonString)
+                ]
+            )
+        }
+    }
+    
     func insertServiceRecord(
         serialCode: String,
         sheetName: String,
@@ -560,36 +587,38 @@ final class DatabaseService {
         }
     }
     
-    // Методы для работы с specific_sheets и specific_records
-    func upsertSpecificSheetUnlocked(name: String) throws -> Int64 {
-        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.isEmpty {
-            throw DatabaseError.invalidInput(message: "Пустое имя листа.")
+    // Методы для работы с specific_categories и specific_records
+    func createSpecificCategoryUnlocked(name: String) throws -> Int64 {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            throw DatabaseError.invalidInput(message: "Пустое имя категории.")
         }
         // Вызывается внутри queue.sync через executeInTransactionBlock
+        // Используем INSERT OR IGNORE для избежания дубликатов
         try executeUnlocked(
-            sql: "INSERT INTO specific_sheets (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING;",
-            bindings: [.text(normalized), .text(dateFormatter.string(from: Date()))]
+            sql: "INSERT OR IGNORE INTO specific_categories (name, created_at) VALUES (?, ?);",
+            bindings: [.text(trimmed), .text(dateFormatter.string(from: Date()))]
         )
+        // Получаем ID (существующей или только что созданной)
         return try singleValueInt64Unlocked(
-            sql: "SELECT id FROM specific_sheets WHERE name = ?;",
-            bindings: [.text(normalized)]
+            sql: "SELECT id FROM specific_categories WHERE name = ?;",
+            bindings: [.text(trimmed)]
         )
     }
     
     func insertSpecificRecordUnlocked(
-        sheetID: Int64,
+        categoryID: Int64,
         rowIndex: Int,
         dataJSON: String
     ) throws {
         // Вызывается внутри queue.sync через executeInTransactionBlock
         try executeUnlocked(
             sql: """
-            INSERT INTO specific_records (sheet_id, row_index, data_json, created_at)
+            INSERT INTO specific_records (category_id, row_index, data_json, created_at)
             VALUES (?, ?, ?, ?);
             """,
             bindings: [
-                .int64(sheetID),
+                .int64(categoryID),
                 .int64(Int64(rowIndex)),
                 .text(dataJSON),
                 .text(dateFormatter.string(from: Date()))
@@ -597,8 +626,8 @@ final class DatabaseService {
         )
     }
     
-    // Методы для чтения specific_sheets и specific_records
-    struct SpecificSheet: Identifiable {
+    // Методы для чтения specific_categories и specific_records
+    struct SpecificCategory: Identifiable {
         let id: Int64
         let name: String
         let createdAt: Date
@@ -606,19 +635,19 @@ final class DatabaseService {
     
     struct SpecificRecord: Identifiable {
         let id: Int64
-        let sheetID: Int64
+        let categoryID: Int64
         let rowIndex: Int
         let data: [String: String]
         let createdAt: Date
     }
     
-    func fetchAllSpecificSheets() throws -> [SpecificSheet] {
+    func fetchAllSpecificCategories() throws -> [SpecificCategory] {
         return try query(
-            sql: "SELECT id, name, created_at FROM specific_sheets ORDER BY name ASC;"
+            sql: "SELECT id, name, created_at FROM specific_categories ORDER BY created_at DESC;"
         ) { statement in
             let createdAtString = stringColumn(statement, index: 2)
             let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
-            return SpecificSheet(
+            return SpecificCategory(
                 id: sqlite3_column_int64(statement, 0),
                 name: stringColumn(statement, index: 1),
                 createdAt: createdAt
@@ -626,81 +655,40 @@ final class DatabaseService {
         }
     }
     
-    // Получает специфичные записи по категории (название листа должно соответствовать категории)
-    func fetchSpecificRecordsByCategory(category: String, searchText: String = "") throws -> [SpecificRecord] {
-        // Ищем листы, которые соответствуют категории
-        // Категории: "Ремонт", "После Дэна", "После Толи", "Хранение", "Другое"
-        let categoryPatterns: [String: [String]] = [
-            "Ремонт": ["РЕМОНТ"],
-            "После Дэна": ["ДЭН", "ДЕН", "РЕМОНТ ДЭН", "РЕМОНТ ДЕН"],
-            "После Толи": ["ТОЛ", "ТОЛЯ", "РЕМОНТ ТОЛ", "РЕМОНТ ТОЛЯ"],
-            "Хранение": ["ХРАН", "СКЛАД"],
-            "Другое": []
-        ]
-        
-        var patterns = categoryPatterns[category] ?? []
-        if category == "Другое" {
-            // Для "Другое" берем все листы, которые не подходят под другие категории
-            let excludePatterns = categoryPatterns.values.flatMap { $0 }
-            // Это сложнее, сделаем проще - ищем листы, которые не содержат известные паттерны
+    func fetchSpecificCategory(id: Int64) throws -> SpecificCategory? {
+        let results = try query(
+            sql: "SELECT id, name, created_at FROM specific_categories WHERE id = ?;",
+            bindings: [.int64(id)]
+        ) { statement in
+            let createdAtString = stringColumn(statement, index: 2)
+            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            return SpecificCategory(
+                id: sqlite3_column_int64(statement, 0),
+                name: stringColumn(statement, index: 1),
+                createdAt: createdAt
+            )
         }
-        
-        // Получаем все листы
-        let allSheets = try fetchAllSpecificSheets()
-        
-        // Фильтруем листы по категории
-        let matchingSheets = allSheets.filter { sheet in
-            let sheetNameUpper = sheet.name.uppercased()
-            if category == "Другое" {
-                // Для "Другое" - листы, которые не подходят под другие категории
-                let allOtherPatterns = ["РЕМОНТ", "ДЭН", "ДЕН", "ТОЛ", "ТОЛЯ", "ХРАН", "СКЛАД"]
-                return !allOtherPatterns.contains { pattern in
-                    sheetNameUpper.contains(pattern)
-                }
-            } else {
-                // Для остальных категорий - проверяем паттерны
-                return patterns.contains { pattern in
-                    sheetNameUpper.contains(pattern)
-                }
-            }
-        }
-        
-        if matchingSheets.isEmpty {
-            return []
-        }
-        
-        // Получаем записи из всех подходящих листов
-        var allRecords: [SpecificRecord] = []
-        for sheet in matchingSheets {
-            let records = try fetchSpecificRecords(sheetID: sheet.id)
-            allRecords.append(contentsOf: records)
-        }
+        return results.first
+    }
+    
+    // Получает специфичные записи по ID категории
+    func fetchSpecificRecordsByCategoryID(categoryID: Int64, searchText: String = "") throws -> [SpecificRecord] {
+        var sql = """
+        SELECT id, category_id, row_index, data_json, created_at
+        FROM specific_records
+        WHERE category_id = ?
+        """
+        var bindings: [SQLiteBinding] = [.int64(categoryID)]
         
         // Применяем поиск, если есть
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let lowerSearch = searchText.lowercased()
-            allRecords = allRecords.filter { record in
-                // Ищем в данных записи
-                return record.data.values.contains { value in
-                    value.lowercased().contains(lowerSearch)
-                }
-            }
+            sql += " AND data_json LIKE ?"
+            bindings.append(.text("%\(searchText)%"))
         }
         
-        return allRecords
-    }
-    
-    // Подсчет записей по категории
-    func countSpecificRecordsByCategory(category: String, searchText: String = "") throws -> Int {
-        let records = try fetchSpecificRecordsByCategory(category: category, searchText: searchText)
-        return records.count
-    }
-    
-    func fetchSpecificRecords(sheetID: Int64) throws -> [SpecificRecord] {
-        return try query(
-            sql: "SELECT id, sheet_id, row_index, data_json, created_at FROM specific_records WHERE sheet_id = ? ORDER BY row_index ASC;",
-            bindings: [.int64(sheetID)]
-        ) { statement in
+        sql += " ORDER BY row_index ASC;"
+        
+        return try query(sql: sql, bindings: bindings) { statement in
             let dataJSON = stringColumn(statement, index: 3)
             let createdAtString = stringColumn(statement, index: 4)
             let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
@@ -716,12 +704,25 @@ final class DatabaseService {
             
             return SpecificRecord(
                 id: sqlite3_column_int64(statement, 0),
-                sheetID: sqlite3_column_int64(statement, 1),
+                categoryID: sqlite3_column_int64(statement, 1),
                 rowIndex: Int(sqlite3_column_int64(statement, 2)),
                 data: data,
                 createdAt: createdAt
             )
         }
+    }
+    
+    // Подсчет записей по ID категории
+    func countSpecificRecordsByCategoryID(categoryID: Int64, searchText: String = "") throws -> Int {
+        var sql = "SELECT COUNT(*) FROM specific_records WHERE category_id = ?"
+        var bindings: [SQLiteBinding] = [.int64(categoryID)]
+        
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sql += " AND data_json LIKE ?"
+            bindings.append(.text("%\(searchText)%"))
+        }
+        
+        return Int(try singleValueInt64(sql: sql + ";", bindings: bindings))
     }
     
     // Поиск в specific_records по номеру двигателя или другим полям
@@ -733,7 +734,7 @@ final class DatabaseService {
         let like = "%\(searchText)%"
         return try query(
             sql: """
-            SELECT id, sheet_id, row_index, data_json, created_at
+            SELECT id, category_id, row_index, data_json, created_at
             FROM specific_records
             WHERE data_json LIKE ?
             ORDER BY row_index ASC
@@ -756,7 +757,40 @@ final class DatabaseService {
             
             return SpecificRecord(
                 id: sqlite3_column_int64(statement, 0),
-                sheetID: sqlite3_column_int64(statement, 1),
+                categoryID: sqlite3_column_int64(statement, 1),
+                rowIndex: Int(sqlite3_column_int64(statement, 2)),
+                data: data,
+                createdAt: createdAt
+            )
+        }
+    }
+    
+    // Получить все записи из всех категорий (для поиска в "Все моторы" и "Проданные")
+    func fetchAllSpecificRecords() throws -> [SpecificRecord] {
+        return try query(
+            sql: """
+            SELECT id, category_id, row_index, data_json, created_at
+            FROM specific_records
+            ORDER BY created_at DESC
+            LIMIT 10000;
+            """
+        ) { statement in
+            let dataJSON = stringColumn(statement, index: 3)
+            let createdAtString = stringColumn(statement, index: 4)
+            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            
+            // Парсим JSON
+            var data: [String: String] = [:]
+            if let jsonData = dataJSON.data(using: .utf8),
+               let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                for (key, value) in jsonObject {
+                    data[key] = "\(value)"
+                }
+            }
+            
+            return SpecificRecord(
+                id: sqlite3_column_int64(statement, 0),
+                categoryID: sqlite3_column_int64(statement, 1),
                 rowIndex: Int(sqlite3_column_int64(statement, 2)),
                 data: data,
                 createdAt: createdAt
@@ -788,13 +822,65 @@ final class DatabaseService {
         }
     }
     
+    func deleteAllSpecificCategories() throws {
+        try inTransaction {
+            // Удаление specific_records произойдет автоматически через CASCADE
+            try executeUnlocked(sql: "DELETE FROM specific_categories;", bindings: [])
+        }
+    }
+    
+    func deleteAllSpecificRecords() throws {
+        try inTransaction {
+            try executeUnlocked(sql: "DELETE FROM specific_records;", bindings: [])
+        }
+    }
+    
     func deleteAllData() throws {
         try inTransaction {
+            try executeUnlocked(sql: "DELETE FROM specific_records;", bindings: [])
+            try executeUnlocked(sql: "DELETE FROM specific_categories;", bindings: [])
             try executeUnlocked(sql: "DELETE FROM service_records;", bindings: [])
             try executeUnlocked(sql: "DELETE FROM motors;", bindings: [])
             try executeUnlocked(sql: "DELETE FROM engines;", bindings: [])
             try executeUnlocked(sql: "DELETE FROM brands;", bindings: [])
         }
+    }
+    
+    /// Оптимизация базы данных (VACUUM)
+    func optimizeDatabase() throws {
+        try queue.sync {
+            try executeUnlocked(sql: "VACUUM;", bindings: [])
+        }
+    }
+    
+    /// Создание резервной копии базы данных
+    func createBackup() throws -> String {
+        let appSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        
+        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.db")
+        let backupDir = appSupport.appendingPathComponent("AutoCore/backups")
+        
+        try FileManager.default.createDirectory(
+            at: backupDir,
+            withIntermediateDirectories: true
+        )
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let timestamp = dateFormatter.string(from: Date())
+        
+        let backupPath = backupDir.appendingPathComponent("autocore_backup_\(timestamp).db")
+        
+        if FileManager.default.fileExists(atPath: dbPath.path) {
+            try FileManager.default.copyItem(at: dbPath, to: backupPath)
+        }
+        
+        return backupPath.path
     }
 
     private func migrate() throws {
@@ -806,32 +892,183 @@ final class DatabaseService {
         """)
 
         let currentVersion = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
-        if currentVersion < 4 {
-            // Создаем таблицы для специфичных листов
+        
+        // Миграция на версию 5: переход от specific_sheets к specific_categories
+        if currentVersion < 5 {
+            // Создаем новую таблицу specific_categories
             try execute(sql: """
-            CREATE TABLE IF NOT EXISTS specific_sheets (
+            CREATE TABLE IF NOT EXISTS specific_categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL
             );
             """)
             
-            try execute(sql: """
-            CREATE TABLE IF NOT EXISTS specific_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sheet_id INTEGER NOT NULL,
-                row_index INTEGER NOT NULL,
-                data_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(sheet_id) REFERENCES specific_sheets(id) ON DELETE CASCADE
-            );
-            """)
+            // Если есть старая таблица specific_sheets, мигрируем данные
+            if tableExists("specific_sheets") {
+                try execute(sql: """
+                INSERT OR IGNORE INTO specific_categories (id, name, created_at)
+                SELECT id, name, created_at FROM specific_sheets;
+                """)
+            }
             
-            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_specific_records_sheet_id ON specific_records(sheet_id);")
+            // Обновляем specific_records: добавляем category_id, если его нет
+            if tableExists("specific_records") {
+                // Проверяем, есть ли уже category_id через PRAGMA
+                var hasCategoryId = false
+                var hasSheetId = false
+                do {
+                    let columns = try query(sql: "PRAGMA table_info(specific_records);") { statement -> String in
+                        stringColumn(statement, index: 1) // name column
+                    }
+                    hasCategoryId = columns.contains("category_id")
+                    hasSheetId = columns.contains("sheet_id")
+                } catch {
+                    // Если не удалось проверить, считаем что колонок нет
+                    hasCategoryId = false
+                    hasSheetId = false
+                }
+                
+                if !hasCategoryId {
+                    // Добавляем category_id
+                    try execute(sql: """
+                    ALTER TABLE specific_records ADD COLUMN category_id INTEGER;
+                    """)
+                    
+                    // Мигрируем данные: sheet_id -> category_id (если есть sheet_id)
+                    if hasSheetId {
+                        try execute(sql: """
+                        UPDATE specific_records
+                        SET category_id = sheet_id
+                        WHERE category_id IS NULL AND sheet_id IS NOT NULL;
+                        """)
+                    }
+                    
+                    // Если остались записи без category_id, создаем дефолтную категорию
+                    let recordsWithoutCategory = try singleValueInt64(
+                        sql: "SELECT COUNT(*) FROM specific_records WHERE category_id IS NULL;"
+                    )
+                    
+                    if recordsWithoutCategory > 0 {
+                        // Создаем дефолтную категорию
+                        let defaultCategoryName = "Импортированные данные"
+                        try execute(sql: """
+                        INSERT OR IGNORE INTO specific_categories (name, created_at)
+                        VALUES (?, ?);
+                        """, bindings: [
+                            .text(defaultCategoryName),
+                            .text(dateFormatter.string(from: Date()))
+                        ])
+                        
+                        let defaultCategoryId = try singleValueInt64(
+                            sql: "SELECT id FROM specific_categories WHERE name = ?;",
+                            bindings: [.text(defaultCategoryName)]
+                        )
+                        
+                        // Присваиваем дефолтную категорию записям без category_id
+                        try execute(sql: """
+                        UPDATE specific_records
+                        SET category_id = ?
+                        WHERE category_id IS NULL;
+                        """, bindings: [.int64(defaultCategoryId)])
+                    }
+                    
+                    // Проверяем, что все category_id валидны (существуют в specific_categories)
+                    // Если есть невалидные, присваиваем дефолтную категорию
+                    let invalidRecordsCount = try singleValueInt64(
+                        sql: """
+                        SELECT COUNT(*) FROM specific_records
+                        WHERE category_id IS NOT NULL
+                        AND category_id NOT IN (SELECT id FROM specific_categories);
+                        """
+                    )
+                    
+                    if invalidRecordsCount > 0 {
+                        // Получаем или создаем дефолтную категорию
+                        let defaultCategoryName = "Импортированные данные"
+                        try execute(sql: """
+                        INSERT OR IGNORE INTO specific_categories (name, created_at)
+                        VALUES (?, ?);
+                        """, bindings: [
+                            .text(defaultCategoryName),
+                            .text(dateFormatter.string(from: Date()))
+                        ])
+                        
+                        let defaultCategoryId = try singleValueInt64(
+                            sql: "SELECT id FROM specific_categories WHERE name = ?;",
+                            bindings: [.text(defaultCategoryName)]
+                        )
+                        
+                        // Исправляем невалидные category_id
+                        try execute(sql: """
+                        UPDATE specific_records
+                        SET category_id = ?
+                        WHERE category_id IS NOT NULL
+                        AND category_id NOT IN (SELECT id FROM specific_categories);
+                        """, bindings: [.int64(defaultCategoryId)])
+                    }
+                    
+                    // Делаем category_id NOT NULL после миграции
+                    // SQLite не поддерживает ALTER COLUMN, поэтому создаем новую таблицу
+                    try execute(sql: """
+                    CREATE TABLE IF NOT EXISTS specific_records_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        category_id INTEGER NOT NULL,
+                        row_index INTEGER NOT NULL,
+                        data_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(category_id) REFERENCES specific_categories(id) ON DELETE CASCADE
+                    );
+                    """)
+                    
+                    // Копируем только записи с валидным category_id
+                    try execute(sql: """
+                    INSERT INTO specific_records_new (id, category_id, row_index, data_json, created_at)
+                    SELECT id, category_id, row_index, data_json, created_at
+                    FROM specific_records
+                    WHERE category_id IS NOT NULL
+                    AND category_id IN (SELECT id FROM specific_categories);
+                    """)
+                    
+                    try execute(sql: "DROP TABLE specific_records;")
+                    try execute(sql: "ALTER TABLE specific_records_new RENAME TO specific_records;")
+                }
+            } else {
+                // Создаем новую таблицу с правильной структурой
+                try execute(sql: """
+                CREATE TABLE IF NOT EXISTS specific_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category_id INTEGER NOT NULL,
+                    row_index INTEGER NOT NULL,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(category_id) REFERENCES specific_categories(id) ON DELETE CASCADE
+                );
+                """)
+            }
+            
+            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_specific_records_category_id ON specific_records(category_id);")
             try execute(sql: "CREATE INDEX IF NOT EXISTS idx_specific_records_row_index ON specific_records(row_index);")
             
+            // Удаляем старую таблицу specific_sheets, если она есть (только после успешной миграции)
+            if tableExists("specific_sheets") {
+                // Проверяем, что все данные мигрированы
+                let sheetsCount = try singleValueInt64(sql: "SELECT COUNT(*) FROM specific_sheets;")
+                let categoriesCount = try singleValueInt64(sql: "SELECT COUNT(*) FROM specific_categories;")
+                
+                // Удаляем только если миграция прошла успешно
+                if categoriesCount >= sheetsCount {
+                    try execute(sql: "DROP TABLE IF EXISTS specific_sheets;")
+                }
+            }
+            
             try execute(sql: "DELETE FROM schema_version;")
-            try execute(sql: "INSERT INTO schema_version (version) VALUES (4);")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (5);")
+        }
+        
+        // Старая миграция версии 4 (оставляем для совместимости, но не используем)
+        if currentVersion < 4 && currentVersion >= 3 {
+            // Пропускаем создание старых таблиц, так как они уже мигрированы в версии 5
         }
         if currentVersion < 3 {
             try execute(sql: """
@@ -915,7 +1152,7 @@ final class DatabaseService {
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_engines_brand_id ON engines(brand_id);")
     }
 
-    private func tableExists(_ table: String) -> Bool {
+    func tableExists(_ table: String) -> Bool {
         let rows = try? query(
             sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?;",
             bindings: [.text(table)]
@@ -923,7 +1160,7 @@ final class DatabaseService {
         return rows?.isEmpty == false
     }
 
-    private func tableHasColumns(table: String, required: [String]) -> Bool {
+    func tableHasColumns(table: String, required: [String]) -> Bool {
         let columns = (try? query(sql: "PRAGMA table_info(\(table));") { statement in
             stringColumn(statement, index: 1)
         }) ?? []
@@ -931,7 +1168,15 @@ final class DatabaseService {
         return Set(required).isSubset(of: existing)
     }
 
-    private func execute(sql: String, bindings: [SQLiteBinding] = []) throws {
+    // Публичный метод для выполнения SQL без параметров (используется в миграциях)
+    public func executeSQL(_ sql: String) throws {
+        try queue.sync {
+            try executeUnlocked(sql: sql, bindings: [])
+        }
+    }
+    
+    // Приватный метод с bindings (для внутреннего использования)
+    fileprivate func execute(sql: String, bindings: [SQLiteBinding] = []) throws {
         try queue.sync {
             try executeUnlocked(sql: sql, bindings: bindings)
         }
@@ -960,7 +1205,7 @@ final class DatabaseService {
         }
     }
     
-    private func inTransaction(_ work: () throws -> Void) throws {
+    func inTransaction(_ work: () throws -> Void) throws {
         try queue.sync {
             try executeUnlocked(sql: "BEGIN;")
             do {
@@ -1001,7 +1246,26 @@ final class DatabaseService {
         }
     }
 
-    private func singleValueInt64(sql: String, bindings: [SQLiteBinding] = []) throws -> Int64 {
+    // Публичный метод для получения одного Int64 значения (используется в миграциях)
+    public func getSingleInt64(sql: String) throws -> Int64 {
+        return try queue.sync {
+            var statement: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &statement, nil) != SQLITE_OK {
+                throw DatabaseError.prepareFailed(message: errorMessage)
+            }
+            guard let stmt = statement else {
+                throw DatabaseError.prepareFailed(message: "Failed to prepare statement")
+            }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_step(stmt) == SQLITE_ROW else {
+                throw DatabaseError.executionFailed(message: "Нет результата для запроса.")
+            }
+            return sqlite3_column_int64(stmt, 0)
+        }
+    }
+    
+    // Приватный метод с bindings (для внутреннего использования)
+    fileprivate func singleValueInt64(sql: String, bindings: [SQLiteBinding] = []) throws -> Int64 {
         let results = try query(sql: sql, bindings: bindings) { statement in
             sqlite3_column_int64(statement, 0)
         }
@@ -1062,14 +1326,14 @@ private enum DatabaseError: Error {
     case invalidInput(message: String)
 }
 
-private func stringColumn(_ statement: OpaquePointer, index: Int32) -> String {
+nonisolated(unsafe) private func stringColumn(_ statement: OpaquePointer, index: Int32) -> String {
     if let cString = sqlite3_column_text(statement, index) {
         return String(cString: cString)
     }
     return ""
 }
 
-private func optionalStringColumn(_ statement: OpaquePointer, index: Int32) -> String? {
+nonisolated(unsafe) private func optionalStringColumn(_ statement: OpaquePointer, index: Int32) -> String? {
     guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
         return nil
     }

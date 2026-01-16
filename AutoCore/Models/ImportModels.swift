@@ -30,30 +30,6 @@ enum SheetImportType: String, CaseIterable, Identifiable {
     }
 }
 
-enum SpecificSheetCategory: String, CaseIterable, Identifiable {
-    case repair = "repair"
-    case afterDan = "afterDan"
-    case afterTolya = "afterTolya"
-    case storage = "storage"
-    case other = "other"
-    
-    var id: String { rawValue }
-    
-    var title: String {
-        switch self {
-        case .repair:
-            return "Ремонт"
-        case .afterDan:
-            return "После Дэна"
-        case .afterTolya:
-            return "После Толи"
-        case .storage:
-            return "Хранение"
-        case .other:
-            return "Другое"
-        }
-    }
-}
 
 struct SheetImportConfig: Identifiable, Hashable {
     let id = UUID()
@@ -68,32 +44,16 @@ struct SheetImportConfig: Identifiable, Hashable {
     var customBrand: String = ""
     var customEngineCode: String = ""
     
-    // Для типа .specific
-    var specificCategory: SpecificSheetCategory = .repair
-    var customCategoryName: String = ""
+    // Для типа .specific - имя категории (вводится пользователем или берется из имени листа)
+    var categoryName: String = ""
     
     init(sheetName: String, rowCount: Int, previewRows: [[String]]) {
         self.sheetName = sheetName
         self.rowCount = rowCount
         self.previewRows = previewRows
         
-        // Автоматическое определение категории для специфичных листов
-        let normalizedName = sheetName.uppercased()
-        if normalizedName.contains("РЕМОНТ") {
-            if normalizedName.contains("ДЭН") || normalizedName.contains("ДЕН") {
-                self.specificCategory = .afterDan
-            } else if normalizedName.contains("ТОЛ") || normalizedName.contains("ТОЛЯ") {
-                self.specificCategory = .afterTolya
-            } else {
-                self.specificCategory = .repair
-            }
-        } else if normalizedName.contains("ДЭН") || normalizedName.contains("ДЕН") {
-            self.specificCategory = .afterDan
-        } else if normalizedName.contains("ТОЛ") || normalizedName.contains("ТОЛЯ") {
-            self.specificCategory = .afterTolya
-        } else if normalizedName.contains("ХРАН") || normalizedName.contains("СКЛАД") {
-            self.specificCategory = .storage
-        }
+        // По умолчанию используем имя листа как имя категории (пользователь может изменить)
+        self.categoryName = sheetName
         
         // Автоматическое определение кода двигателя из названия листа
         let engineCodePattern = #"[A-Z]{1,3}\s*[-_ ]?\s*\d{2,4}[A-Z]?"#
@@ -104,6 +64,7 @@ struct SheetImportConfig: Identifiable, Hashable {
         }
         
         // Автоматическое определение бренда из названия листа (если есть известные бренды)
+        let normalizedName = sheetName.uppercased()
         let brandMapping: [String: String] = [
             "MITSUBISHI": "Mitsubishi",
             "TOYOTA": "Toyota",
@@ -156,10 +117,7 @@ struct SheetImportConfig: Identifiable, Hashable {
             return (selectedBrandID != nil || !customBrand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
                    effectiveEngineCode != nil
         case .specific:
-            if specificCategory == .other {
-                return !customCategoryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return true
+            return !categoryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 }
@@ -180,5 +138,5 @@ struct ImportPreviewSummary {
     let newBrands: [String]
     let newEngines: [(brand: String, code: String)]
     let skippedSheets: [String]
-    let specificSheets: [(name: String, category: SpecificSheetCategory, customCategory: String?)]
+    let specificSheets: [(name: String, categoryName: String)]
 }

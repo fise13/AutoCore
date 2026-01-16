@@ -3,7 +3,8 @@ import SwiftUI
 struct SoldMotorsView: View {
     let motors: [Motor]
     @Binding var selectedMotorID: Int64?
-    @Binding var searchText: String
+    let searchText: String
+    let onSearchTextChange: (String) -> Void
     let isLoading: Bool
     let totalCount: Int
     let hasMorePages: Bool
@@ -97,10 +98,17 @@ struct SoldMotorsView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Поиск по серийному коду, двигателю, бренду")
+        .searchable(text: Binding(
+            get: { searchText },
+            set: { newValue in
+                // Вызываем напрямую - изменение произойдет после завершения рендера
+                onSearchTextChange(newValue)
+            }
+        ), prompt: "Поиск по серийному коду, двигателю, бренду")
         .onAppear {
             if hasMorePages && motors.count > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 секунды
                     onLoadMore()
                 }
             }

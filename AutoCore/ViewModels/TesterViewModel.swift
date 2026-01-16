@@ -25,10 +25,15 @@ final class TesterViewModel: ObservableObject {
         let soldMotorsCount: Int
         let serviceRecordsCount: Int
         let serviceRecordsByCategory: [String: Int]
+        let specificCategoriesCount: Int
+        let specificRecordsCount: Int
     }
     
     func refreshStats() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -37,6 +42,8 @@ final class TesterViewModel: ObservableObject {
                 let allMotors = try await Task { try self.database.fetchMotors(filter: DatabaseService.MotorFilter(), limit: nil, offset: 0) }.value
                 let soldMotors = try await Task { try self.database.fetchMotors(filter: DatabaseService.MotorFilter(availability: .sold), limit: nil, offset: 0) }.value
                 let serviceRecords = try await Task { try self.database.fetchAllServiceRecords() }.value
+                let specificCategories = try await Task { try self.database.fetchAllSpecificCategories() }.value
+                let specificRecords = try await Task { try self.database.fetchAllSpecificRecords() }.value
                 
                 var recordsByCategory: [String: Int] = [:]
                 for record in serviceRecords {
@@ -49,87 +56,179 @@ final class TesterViewModel: ObservableObject {
                     motorsCount: allMotors.count,
                     soldMotorsCount: soldMotors.count,
                     serviceRecordsCount: serviceRecords.count,
-                    serviceRecordsByCategory: recordsByCategory
+                    serviceRecordsByCategory: recordsByCategory,
+                    specificCategoriesCount: specificCategories.count,
+                    specificRecordsCount: specificRecords.count
                 )
                 
-                await self.updateStats(stats)
+                await MainActor.run { [weak self] in
+                    self?.updateStats(stats)
+                }
             } catch {
-                await self.setError("Ошибка получения статистики: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка получения статистики: \(error.localizedDescription)")
+                }
             }
         }
     }
     
     func clearAllServiceRecords() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 try await Task { try self.database.deleteAllServiceRecords() }.value
-                await self.setSuccess("Все специфичные записи удалены")
-                await self.refreshStats()
-                await self.onDataChanged?()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все специфичные записи удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
             } catch {
-                await self.setError("Ошибка удаления: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
             }
         }
     }
     
     func clearAllMotors() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 try await Task { try self.database.deleteAllMotors() }.value
-                await self.setSuccess("Все моторы удалены")
-                await self.refreshStats()
-                await self.onDataChanged?()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все моторы удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
             } catch {
-                await self.setError("Ошибка удаления: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
             }
         }
     }
     
     func clearAllEngines() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 try await Task { try self.database.deleteAllEngines() }.value
-                await self.setSuccess("Все двигатели удалены")
-                await self.refreshStats()
-                await self.onDataChanged?()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все двигатели удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
             } catch {
-                await self.setError("Ошибка удаления: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
             }
         }
     }
     
     func clearAllBrands() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 try await Task { try self.database.deleteAllBrands() }.value
-                await self.setSuccess("Все бренды удалены")
-                await self.refreshStats()
-                await self.onDataChanged?()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все бренды удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
             } catch {
-                await self.setError("Ошибка удаления: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func clearAllSpecificCategories() {
+        Task { @MainActor in
+            isLoading = true
+        }
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task { try self.database.deleteAllSpecificCategories() }.value
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все специфичные категории удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func clearAllSpecificRecords() {
+        Task { @MainActor in
+            isLoading = true
+        }
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task { try self.database.deleteAllSpecificRecords() }.value
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Все специфичные записи удалены")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка удаления: \(error.localizedDescription)")
+                }
             }
         }
     }
     
     func clearAllData() {
-        isLoading = true
+        Task { @MainActor in
+            isLoading = true
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 try await Task { try self.database.deleteAllData() }.value
-                await self.setSuccess("Вся база данных очищена")
-                await self.refreshStats()
-                await self.onDataChanged?()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Вся база данных очищена")
+                    self.refreshStats()
+                    self.onDataChanged?()
+                }
             } catch {
-                await self.setError("Ошибка очистки: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка очистки: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -142,7 +241,9 @@ final class TesterViewModel: ObservableObject {
         info += "Двигатели: \(stats.enginesCount)\n"
         info += "Моторы: \(stats.motorsCount)\n"
         info += "Проданные моторы: \(stats.soldMotorsCount)\n"
-        info += "Специфичные записи: \(stats.serviceRecordsCount)\n\n"
+        info += "Специфичные записи: \(stats.serviceRecordsCount)\n"
+        info += "Специфичные категории: \(stats.specificCategoriesCount)\n"
+        info += "Специфичные записи (новые): \(stats.specificRecordsCount)\n\n"
         
         if !stats.serviceRecordsByCategory.isEmpty {
             info += "По категориям:\n"
@@ -164,7 +265,8 @@ final class TesterViewModel: ObservableObject {
     private func setError(_ message: String) {
         self.errorMessage = message
         self.isLoading = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 секунды
             self.errorMessage = nil
         }
     }
@@ -173,8 +275,52 @@ final class TesterViewModel: ObservableObject {
     private func setSuccess(_ message: String) {
         self.successMessage = message
         self.isLoading = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 секунды
             self.successMessage = nil
+        }
+    }
+    
+    func optimizeDatabase() {
+        Task { @MainActor in
+            isLoading = true
+        }
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task { try self.database.optimizeDatabase() }.value
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("База данных оптимизирована")
+                    self.refreshStats()
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка оптимизации: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func exportDatabaseBackup() {
+        Task { @MainActor in
+            isLoading = true
+        }
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                let backupPath = try await Task { try self.database.createBackup() }.value
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.setSuccess("Резервная копия создана: \(backupPath)")
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка создания резервной копии: \(error.localizedDescription)")
+                }
+            }
         }
     }
 }

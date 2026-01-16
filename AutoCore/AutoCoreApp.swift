@@ -29,6 +29,7 @@ struct AutoCoreApp: App {
         }
         .windowStyle(.automatic)
         .commands {
+            // Меню "Правка"
             CommandGroup(replacing: .undoRedo) {
                 Button("Отменить") {
                     if let appViewModel = appState.appViewModel {
@@ -45,6 +46,36 @@ struct AutoCoreApp: App {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             
+            // Меню "Файл"
+            CommandGroup(replacing: .newItem) {
+                Button("Новый мотор") {
+                    if let appViewModel = appState.appViewModel {
+                        // Открываем окно добавления мотора
+                        NotificationCenter.default.post(name: NSNotification.Name("OpenAddMotor"), object: nil)
+                    }
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            
+            CommandGroup(after: .newItem) {
+                Divider()
+                
+                Button("Импорт Excel") {
+                    if let appViewModel = appState.appViewModel {
+                        NotificationCenter.default.post(name: NSNotification.Name("OpenImport"), object: nil)
+                    }
+                }
+                .keyboardShortcut("i", modifiers: .command)
+                
+                Button("Экспорт Excel") {
+                    if let appViewModel = appState.appViewModel {
+                        NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
+                    }
+                }
+                .keyboardShortcut("e", modifiers: .command)
+            }
+            
+            // Меню "Вид"
             CommandGroup(after: .toolbar) {
                 Divider()
                 
@@ -52,6 +83,38 @@ struct AutoCoreApp: App {
                     openTesterWindow()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+            }
+            
+            // Меню "Моторы"
+            CommandMenu("Моторы") {
+                Button("Добавить мотор") {
+                    NotificationCenter.default.post(name: NSNotification.Name("OpenAddMotor"), object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                
+                Divider()
+                
+                Button("Пометить как проданный") {
+                    NotificationCenter.default.post(name: NSNotification.Name("SellMotor"), object: nil)
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                
+                Button("Дублировать") {
+                    NotificationCenter.default.post(name: NSNotification.Name("DuplicateMotor"), object: nil)
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                
+                Divider()
+                
+                Button("Импорт из Excel") {
+                    NotificationCenter.default.post(name: NSNotification.Name("OpenImport"), object: nil)
+                }
+                .keyboardShortcut("i", modifiers: .command)
+                
+                Button("Экспорт в Excel") {
+                    NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
+                }
+                .keyboardShortcut("e", modifiers: .command)
             }
         }
         

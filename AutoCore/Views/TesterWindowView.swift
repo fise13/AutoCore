@@ -33,6 +33,8 @@ struct TesterWindowView: View {
                                 StatRow(label: "Моторы", value: "\(stats.motorsCount)")
                                 StatRow(label: "Проданные моторы", value: "\(stats.soldMotorsCount)")
                                 StatRow(label: "Специфичные записи", value: "\(stats.serviceRecordsCount)")
+                                StatRow(label: "Специфичные категории", value: "\(stats.specificCategoriesCount)")
+                                StatRow(label: "Специфичные записи (новые)", value: "\(stats.specificRecordsCount)")
                                 
                                 if !stats.serviceRecordsByCategory.isEmpty {
                                     Divider()
@@ -55,15 +57,42 @@ struct TesterWindowView: View {
                     // Действия очистки
                     GroupBox("Очистка данных") {
                         VStack(spacing: 12) {
-                            TesterButton(
-                                title: "Удалить все специфичные записи",
-                                icon: "doc.text",
-                                color: .orange,
-                                action: {
-                                    viewModel.clearAllServiceRecords()
+                            // Специфичные данные
+                            GroupBox("Специфичные данные") {
+                                VStack(spacing: 8) {
+                                    TesterButton(
+                                        title: "Удалить все специфичные категории",
+                                        icon: "folder.fill",
+                                        color: .orange,
+                                        action: {
+                                            viewModel.clearAllSpecificCategories()
+                                        }
+                                    )
+                                    
+                                    TesterButton(
+                                        title: "Удалить все специфичные записи",
+                                        icon: "doc.text",
+                                        color: .orange,
+                                        action: {
+                                            viewModel.clearAllSpecificRecords()
+                                        }
+                                    )
+                                    
+                                    TesterButton(
+                                        title: "Удалить старые специфичные записи",
+                                        icon: "doc.text.below.ecg",
+                                        color: .orange,
+                                        action: {
+                                            viewModel.clearAllServiceRecords()
+                                        }
+                                    )
                                 }
-                            )
+                                .padding(4)
+                            }
                             
+                            Divider()
+                            
+                            // Основные данные
                             TesterButton(
                                 title: "Удалить все моторы",
                                 icon: "engine.combustion",
@@ -124,6 +153,24 @@ struct TesterWindowView: View {
                                 pasteboard.setString(info, forType: .string)
                             }) {
                                 Label("Скопировать статистику", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            Divider()
+                            
+                            Button(action: {
+                                viewModel.optimizeDatabase()
+                            }) {
+                                Label("Оптимизировать базу данных", systemImage: "wand.and.stars")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            Button(action: {
+                                viewModel.exportDatabaseBackup()
+                            }) {
+                                Label("Создать резервную копию", systemImage: "externaldrive.badge.plus")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)

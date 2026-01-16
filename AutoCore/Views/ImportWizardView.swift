@@ -352,39 +352,6 @@ private struct SpecificConfigRow: View {
             Text(config.sheetName)
                 .font(.headline)
             
-            HStack {
-                Text("Автоматически определена категория:")
-                    .foregroundStyle(.green)
-                    .font(.caption)
-                Text(localConfig.specificCategory.title)
-                    .fontWeight(.semibold)
-            }
-            
-            Picker("Или выберите другую категорию", selection: Binding(
-                get: { localConfig.specificCategory },
-                set: { newCategory in
-                    localConfig.specificCategory = newCategory
-                    if newCategory != .other {
-                        localConfig.customCategoryName = ""
-                    }
-                    onUpdate(localConfig)
-                }
-            )) {
-                ForEach(SpecificSheetCategory.allCases) { category in
-                    Text(category.title).tag(category)
-                }
-            }
-            .pickerStyle(.radioGroup)
-            
-            if localConfig.specificCategory == .other {
-                TextField("Введите название категории", text: Binding(
-                    get: { localConfig.customCategoryName },
-                    set: { newValue in
-                        localConfig.customCategoryName = newValue
-                        onUpdate(localConfig)
-                    }
-                ))
-            }
         }
         .padding()
         .background(.regularMaterial)
@@ -467,7 +434,7 @@ struct ImportStep4_PreviewView: View {
                     GroupBox("Специфичные листы") {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(summary.specificSheets, id: \.name) { sheet in
-                                Text("• \(sheet.name) — \(sheet.customCategory ?? sheet.category.title)")
+                                Text("• \(sheet.name) — \(sheet.categoryName)")
                             }
                         }
                         .padding(8)

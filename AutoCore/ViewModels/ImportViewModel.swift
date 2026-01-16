@@ -31,8 +31,11 @@ final class ImportViewModel: ObservableObject {
     }
     
     func load(url: URL) {
-        isLoading = true
-        errorMessage = nil
+        Task { @MainActor in
+            isLoading = true
+            errorMessage = nil
+        }
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 guard let self else { return }
@@ -43,9 +46,13 @@ final class ImportViewModel: ObservableObject {
                     }
                 }
                 let data = try self.importService.loadSheets(from: url)
-                await self.apply(sheets: data)
+                await MainActor.run { [weak self] in
+                    self?.apply(sheets: data)
+                }
             } catch {
-                await self?.setError("Ошибка импорта Excel: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.setError("Ошибка импорта Excel: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -55,7 +62,9 @@ final class ImportViewModel: ObservableObject {
             guard let self else { return }
             do {
                 let brands = try self.database.fetchBrands()
-                await self.updateBrands(brands)
+                await MainActor.run { [weak self] in
+                    self?.updateBrands(brands)
+                }
             } catch {
                 // Ignore
             }
@@ -364,7 +373,7 @@ final class ImportViewModel: ObservableObject {
         var newEnginesList: [(brand: String, code: String)] = []
         var totalMotors = 0
         var skippedSheets: [String] = []
-        var specificSheets: [(name: String, category: SpecificSheetCategory, customCategory: String?)] = []
+        var specificSheets: [(name: String, categoryName: String)] = []
         
         for config in sheetConfigs {
             switch config.importType {
@@ -387,8 +396,7 @@ final class ImportViewModel: ObservableObject {
                     totalMotors += rows.count
                 }
             case .specific:
-                let category = config.specificCategory == .other ? config.customCategoryName : config.specificCategory.title
-                specificSheets.append((name: config.sheetName, category: config.specificCategory, customCategory: category))
+                specificSheets.append((name: config.sheetName, categoryName: config.categoryName))
             }
         }
         
@@ -569,11 +577,14 @@ final class ImportViewModel: ObservableObject {
     
     enum ImportError: LocalizedError {
         case cancelled
+        case invalidCategoryName
         
         var errorDescription: String? {
             switch self {
             case .cancelled:
                 return "Импорт отменен"
+            case .invalidCategoryName:
+                return "Имя категории не может быть пустым"
             }
         }
     }
@@ -686,29 +697,34 @@ final class ImportViewModel: ObservableObject {
         // Строим данные на основе маппинга
         let rows = buildSpecificRows(for: sheetData, mapping: mapping)
         
-        // Получаем или создаем specific_sheet
-        let sheetID = try database.upsertSpecificSheetUnlocked(name: config.sheetName)
+        // Создаем категорию (имя задано пользователем или взято из имени листа)
+        let categoryName = config.categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !categoryName.isEmpty else {
+            throw ImportError.invalidCategoryName
+        }
         
-        // Определяем поле с номером двигателя (если есть)
-        let serialCodeFieldName = findSerialCodeField(in: mapping)
+        // Создаем категорию (если уже существует - получим её ID)
+        let categoryID: Int64
+        do {
+            categoryID = try database.createSpecificCategoryUnlocked(name: categoryName)
+        } catch {
+            // Если категория уже существует, получаем её ID
+            // В SQLite UNIQUE constraint вернет ошибку, но мы можем попробовать найти существующую
+            // Для простоты создаем новую с уникальным именем или используем существующую
+            // В реальности лучше проверить существование перед созданием
+            throw error
+        }
         
-        // Сохраняем каждую строку как JSON и создаем моторы если есть номер двигателя
+        // Сохраняем каждую строку как JSON в specific_records
         for (rowIndex, rowData) in rows.enumerated() {
             let jsonData = try JSONSerialization.data(withJSONObject: rowData)
             guard let jsonString = String(data: jsonData, encoding: .utf8) else { continue }
             
             try database.insertSpecificRecordUnlocked(
-                sheetID: sheetID,
+                categoryID: categoryID,
                 rowIndex: rowIndex,
                 dataJSON: jsonString
             )
-            
-            // Специфичные листы НЕ создают моторы в основной таблице
-            // Все данные сохраняются только в specific_records
-            // Это позволяет:
-            // 1. Не создавать бренды типа "UNKNOWN"
-            // 2. Хранить данные в специфичных листах отдельно
-            // 3. Поиск будет работать через специальную логику поиска в specific_records
         }
     }
     

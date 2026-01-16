@@ -61,13 +61,16 @@ private struct SheetTypeSelectionRow: View {
                     localConfig.importType = newType
                     // При смене типа сбрасываем настройки
                     if newType == .engines {
-                        localConfig.specificCategory = .repair
-                        localConfig.customCategoryName = ""
+                        localConfig.categoryName = ""
                     } else if newType == .specific {
                         // Для специфичных листов сбрасываем настройки бренда/двигателя
                         localConfig.selectedBrandID = nil
                         localConfig.customBrand = ""
                         localConfig.customEngineCode = ""
+                        // По умолчанию используем имя листа как имя категории
+                        if localConfig.categoryName.isEmpty {
+                            localConfig.categoryName = localConfig.sheetName
+                        }
                     }
                     onUpdate(localConfig)
                     // Обновляем автоматический маппинг колонок при смене типа
@@ -159,37 +162,33 @@ private struct SheetTypeSelectionRow: View {
                 .cornerRadius(8)
             }
             
-            // Для специфичных листов - выбор категории
+            // Для специфичных листов - ввод имени категории
             if localConfig.importType == .specific {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Категория")
+                    Text("Имя категории")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     
-                    Picker("Категория", selection: Binding(
-                        get: { localConfig.specificCategory },
-                        set: { newCategory in
-                            localConfig.specificCategory = newCategory
-                            if newCategory != .other {
-                                localConfig.customCategoryName = ""
-                            }
+                    Text("Введите имя категории для этого специфичного листа. По умолчанию используется имя листа Excel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    TextField("Имя категории", text: Binding(
+                        get: { localConfig.categoryName },
+                        set: { newValue in
+                            localConfig.categoryName = newValue
                             onUpdate(localConfig)
                         }
-                    )) {
-                        ForEach(SpecificSheetCategory.allCases) { category in
-                            Text(category.title).tag(category)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
+                    ))
                     
-                    if localConfig.specificCategory == .other {
-                        TextField("Введите название категории", text: Binding(
-                            get: { localConfig.customCategoryName },
-                            set: { newValue in
-                                localConfig.customCategoryName = newValue
-                                onUpdate(localConfig)
-                            }
-                        ))
+                    HStack {
+                        Button("Использовать имя листа") {
+                            localConfig.categoryName = localConfig.sheetName
+                            onUpdate(localConfig)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        Spacer()
                     }
                 }
                 .padding()

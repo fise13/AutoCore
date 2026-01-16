@@ -1,15 +1,22 @@
 import SwiftUI
+import AppKit
 
 struct MotorListView: View {
     let motors: [Motor]
     @Binding var selectedMotorID: Int64?
-    @Binding var searchText: String
-    @Binding var availabilityFilter: MotorAvailabilityFilter
+    let searchText: String
+    let availabilityFilter: MotorAvailabilityFilter
     let isLoading: Bool
     let totalCount: Int
     let hasMorePages: Bool
     let onToggleSold: (Motor) -> Void
     let onLoadMore: () -> Void
+    let onDuplicate: ((Motor) -> Void)?
+    let onExportSelected: ((Motor) -> Void)?
+    let onCellSave: (Int64, EditableCellState.EditableField, String) -> Void
+    
+    @StateObject private var editViewModel = InlineEditViewModel()
+    @FocusState private var isTableFocused: Bool
     
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -19,21 +26,15 @@ struct MotorListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Picker("Наличие", selection: $availabilityFilter) {
-                    ForEach(MotorAvailabilityFilter.allCases) { status in
-                        Text(status.title).tag(status)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Spacer()
-                if isLoading {
+            if isLoading {
+                HStack {
+                    Spacer()
                     ProgressView()
                         .scaleEffect(0.7)
+                    Spacer()
                 }
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
 
             if motors.isEmpty && !isLoading {
                 if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -55,61 +56,168 @@ struct MotorListView: View {
                 }
             } else {
                 Table(motors, selection: $selectedMotorID) {
-                TableColumn("Номер двигателя") { motor in
-                    MotorRowView(motor: motor)
-                }
-                TableColumn("Комплектация") { motor in
-                    rowText(motor.configuration, sold: motor.availability == .sold)
-                }
-                TableColumn("Особые отметки") { motor in
-                    rowText(motor.notes, sold: motor.availability == .sold)
-                }
-                TableColumn("Кол-во") { motor in
-                    rowText("\(motor.quantity)", sold: motor.availability == .sold)
-                }
-                TableColumn("Коробка") { motor in
-                    rowText(motor.transmission, sold: motor.availability == .sold)
-                }
-                TableColumn("Дата прихода") { motor in
-                    rowText(formatDate(motor.arrivalDate), sold: motor.availability == .sold)
-                }
-                TableColumn("Дата продажи") { motor in
-                    rowText(formatDate(motor.soldDate), sold: motor.availability == .sold)
-                }
-                TableColumn("Действие") { motor in
-                    Button(motor.availability == .sold ? "Вернуть" : "Продать") {
-                        onToggleSold(motor)
+                    TableColumn("Номер двигателя") { motor in
+                        makeEditableCell(motor: motor, field: .serialCode)
+                            .contextMenu {
+                                MotorContextMenu(
+                                    motor: motor,
+                                    onToggleSold: { onToggleSold(motor) },
+                                    onDuplicate: {
+                                        onDuplicate?(motor)
+                                    },
+                                    onExport: {
+                                        onExportSelected?(motor)
+                                    }
+                                )
+                            }
+                    }
+                    TableColumn("Комплектация") { motor in
+                        makeEditableCell(motor: motor, field: .configuration)
+                    }
+                    TableColumn("Особые отметки") { motor in
+                        makeEditableCell(motor: motor, field: .notes)
+                    }
+                    TableColumn("Кол-во") { motor in
+                        makeEditableCell(motor: motor, field: .quantity)
+                    }
+                    TableColumn("Коробка") { motor in
+                        makeEditableCell(motor: motor, field: .transmission)
+                    }
+                    TableColumn("Дата прихода") { motor in
+                        makeEditableCell(motor: motor, field: .arrivalDate)
+                    }
+                    TableColumn("Дата продажи") { motor in
+                        makeEditableCell(motor: motor, field: .soldDate)
+                    }
+                    TableColumn("Действие") { motor in
+                        Button(motor.availability == .sold ? "Вернуть" : "Продать") {
+                            onToggleSold(motor)
+                        }
                     }
                 }
-            }
-            // Пагинация больше не нужна, так как все моторы загружены в память
-            // Пагинация больше не нужна, так как все моторы загружены в память
-            // Показываем только счетчик
-            .overlay(alignment: .bottom) {
-                if !isLoading && totalCount > 0 {
-                    HStack {
-                        Text("Показано \(motors.count) из \(totalCount)")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                        Spacer()
-                    }
-                    .padding()
-                    .background(.regularMaterial)
+                .focused($isTableFocused)
+                .onAppear {
+                    editViewModel.onCellSave = onCellSave
                 }
-            }
+                .overlay(alignment: .bottom) {
+                    if !isLoading && totalCount > 0 {
+                        HStack {
+                            Text("Показано \(motors.count) из \(totalCount)")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                            Spacer()
+                        }
+                        .padding()
+                        .background(.regularMaterial)
+                    }
+                }
+                .background(
+                    KeyboardHandler(
+                        onTab: {
+                            if let editing = editViewModel.editingCell {
+                                editViewModel.moveToNextCell(
+                                    currentMotorID: editing.motorID,
+                                    currentField: editing.field,
+                                    motors: motors,
+                                    forward: true
+                                )
+                            }
+                        },
+                        onShiftTab: {
+                            if let editing = editViewModel.editingCell {
+                                editViewModel.moveToNextCell(
+                                    currentMotorID: editing.motorID,
+                                    currentField: editing.field,
+                                    motors: motors,
+                                    forward: false
+                                )
+                            }
+                        },
+                        onEnter: {
+                            if editViewModel.editingCell != nil {
+                                // Enter уже обрабатывается в TextField.onSubmit
+                            } else {
+                                // Enter → начать редактирование ВЫДЕЛЕННОЙ ячейки
+                                editViewModel.startEditingSelectedCell(motors: motors)
+                            }
+                        },
+                        onEscape: {
+                            editViewModel.cancelEditing()
+                        }
+                    )
+                )
             }
         }
-        .searchable(text: $searchText, prompt: "Поиск по серийному коду")
     }
 
     private func formatDate(_ date: Date?) -> String {
         guard let date else { return "" }
         return Self.dateFormatter.string(from: date)
     }
-
-    private func rowText(_ value: String, sold: Bool) -> some View {
-        Text(value)
-            .foregroundStyle(sold ? .secondary : .primary)
+    
+    // MARK: - Helper для создания EditableCell
+    
+    private func makeEditableCell(motor: Motor, field: EditableCellState.EditableField) -> EditableCell {
+        EditableCell(
+            motor: motor,
+            field: field,
+            selectedCell: editViewModel.selectedCell,
+            editingCell: editViewModel.editingCell,
+            onSelect: { motorID, field in
+                editViewModel.selectCell(motorID: motorID, field: field)
+            },
+            onStartEditing: { motorID, field in
+                let value = getCellValue(motorID: motorID, field: field, motors: motors)
+                editViewModel.startEditing(motorID: motorID, field: field, currentValue: value)
+            },
+            onSave: { motorID, field, value in
+                editViewModel.saveCell(motorID: motorID, field: field, value: value)
+                onCellSave(motorID, field, value)
+            },
+            onCopy: { value in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(value, forType: .string)
+            },
+            onPaste: {
+                NSPasteboard.general.string(forType: .string) ?? ""
+            },
+            onClear: {
+                if let selected = editViewModel.selectedCell {
+                    editViewModel.saveCell(motorID: selected.motorID, field: selected.field, value: "")
+                    onCellSave(selected.motorID, selected.field, "")
+                }
+            },
+            isSold: motor.availability == .sold
+        )
+    }
+    
+    private func getCellValue(motorID: Int64, field: EditableCellState.EditableField, motors: [Motor]) -> String {
+        guard let motor = motors.first(where: { $0.id == motorID }) else { return "" }
+        
+        switch field {
+        case .serialCode:
+            return motor.serialCode
+        case .configuration:
+            return motor.configuration
+        case .notes:
+            return motor.notes
+        case .quantity:
+            return "\(motor.quantity)"
+        case .transmission:
+            return motor.transmission
+        case .arrivalDate:
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.string(from: motor.arrivalDate)
+        case .soldDate:
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            if let soldDate = motor.soldDate {
+                return formatter.string(from: soldDate)
+            } else {
+                return ""
+            }
+        }
     }
 }
 
@@ -125,6 +233,44 @@ private struct MotorRowView: View {
             }
             Text(motor.serialCode)
                 .foregroundStyle(motor.availability == .sold ? .secondary : .primary)
+        }
+    }
+}
+
+// MARK: - Context Menu
+
+private struct MotorContextMenu: View {
+    let motor: Motor
+    let onToggleSold: () -> Void
+    let onDuplicate: () -> Void
+    let onExport: () -> Void
+    
+    var body: some View {
+        Group {
+            Button(motor.availability == .sold ? "Вернуть в наличие" : "Пометить как проданный") {
+                onToggleSold()
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            
+            Divider()
+            
+            Button("Дублировать") {
+                onDuplicate()
+            }
+            .keyboardShortcut("d", modifiers: .command)
+            
+            Button("Экспортировать") {
+                onExport()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            
+            Divider()
+            
+            Button("Копировать номер") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(motor.serialCode, forType: .string)
+            }
+            .keyboardShortcut("c", modifiers: .command)
         }
     }
 }
