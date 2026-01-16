@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 import Combine
+import Foundation
 
 struct RootView: View {
     @ObservedObject var appViewModel: AppViewModel
@@ -15,6 +16,9 @@ struct RootView: View {
     @State private var isShowingAlert = false
     @State private var specificSheetsForExport: [DatabaseService.SpecificSheet] = []
     
+    // Окно для показа панелей (получается через WindowAccessor)
+    @State private var hostWindow: NSWindow?
+    
     init(appViewModel: AppViewModel) {
         self.appViewModel = appViewModel
         _importViewModel = StateObject(wrappedValue: ImportViewModel(database: appViewModel.database))
@@ -24,6 +28,7 @@ struct RootView: View {
         splitView
             .navigationTitle("AutoCore")
             .toolbar { toolbarContent }
+            .background(WindowAccessor(window: $hostWindow))
             .sheet(isPresented: $isShowingImportPreview) {
                 ImportWizardView(
                     viewModel: importViewModel,
@@ -196,7 +201,9 @@ struct RootView: View {
                 openImportPanel()
             }
             Button("Экспорт Excel") {
-                exportExcel()
+                Task { @MainActor in
+                    exportExcel()
+                }
             }
             Button("Добавить мотор") {
                 isShowingAddMotor = true
@@ -206,7 +213,13 @@ struct RootView: View {
 
     @MainActor
     private func openImportPanel() {
-        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем begin с completion handler
+        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем окно из WindowAccessor
+        guard let window = hostWindow else {
+            assertionFailure("Нет окна для показа Open Panel. WindowAccessor должен быть установлен.")
+            showAlert("Не удалось найти окно приложения")
+            return
+        }
+        
         let panel = NSOpenPanel()
         panel.title = "Выберите Excel файл"
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
@@ -214,8 +227,8 @@ struct RootView: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         
-        // begin - правильный способ для SwiftUI, не блокирует поток
-        panel.begin { response in
+        // beginSheetModal - правильный способ для SwiftUI с привязкой к окну
+        panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else {
                 // Пользователь отменил - ничего не делаем
                 return
@@ -229,6 +242,7 @@ struct RootView: View {
         }
     }
 
+    @MainActor
     private func exportExcel() {
         // Упрощенный экспорт - экспортируем все автоматически без диалога выбора
         performExport(selectedSpecificSheetIDs: nil)
@@ -236,25 +250,34 @@ struct RootView: View {
     
     @MainActor
     private func performExport(selectedSpecificSheetIDs: Set<Int64>?) {
-        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем begin с completion handler
-        // Это асинхронный, неблокирующий вызов
-        let panel = NSSavePanel()
-        panel.title = "Экспорт Excel"
-        panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
-        panel.nameFieldStringValue = "autocore.xlsx"
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
+        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем окно из WindowAccessor или fallback
+        guard let window = hostWindow ?? NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first(where: { $0.isVisible && $0.isKeyWindow }) else {
+            assertionFailure("Нет окна для показа Save Panel. WindowAccessor должен быть установлен.")
+            showAlert("Не удалось найти окно приложения")
+            return
+        }
         
-        // begin - правильный способ для SwiftUI, не блокирует поток
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else {
-                // Пользователь отменил - ничего не делаем
-                return
-            }
+        // Откладываем создание панели на следующий run loop цикл для гарантии правильного контекста
+        DispatchQueue.main.async {
+            let panel = NSSavePanel()
             
-            // Выполняем экспорт после выбора файла
-            Task { @MainActor in
-                await self.handleExport(url: url, selectedSpecificSheetIDs: selectedSpecificSheetIDs)
+            panel.title = "Экспорт Excel"
+            panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
+            panel.nameFieldStringValue = "autocore.xlsx"
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+            
+            // beginSheetModal - правильный способ для SwiftUI с привязкой к окну
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else {
+                    // Пользователь отменил - ничего не делаем
+                    return
+                }
+                
+                // Выполняем экспорт после выбора файла
+                Task { @MainActor in
+                    await self.handleExport(url: url, selectedSpecificSheetIDs: selectedSpecificSheetIDs)
+                }
             }
         }
     }
@@ -316,5 +339,27 @@ private extension RootView {
     func showAlert(_ message: String) {
         alertMessage = message
         isShowingAlert = true
+    }
+}
+
+// MARK: - WindowAccessor
+// NSViewRepresentable для получения реального NSWindow из SwiftUI View
+private struct WindowAccessor: NSViewRepresentable {
+    @Binding var window: NSWindow?
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            // Получаем реальное окно через view.window
+            self.window = view.window
+        }
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // Обновляем окно при изменении иерархии
+        DispatchQueue.main.async {
+            self.window = nsView.window
+        }
     }
 }
