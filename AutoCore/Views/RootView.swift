@@ -18,6 +18,9 @@ struct RootView: View {
     @State private var alertMessage = ""
     @State private var isShowingAlert = false
     @State private var isInspectorVisible = false // Inspector скрыт по умолчанию
+    @State private var isShowingUpdateNotification = false
+    @State private var isShowingUpdateSuccess = false
+    @StateObject private var updateService = UpdateService.shared
     
     // Окно для показа панелей (получается через WindowAccessor)
     @State private var hostWindow: NSWindow?
@@ -81,6 +84,37 @@ struct RootView: View {
             .onChange(of: appViewModel.selectedSection) { _, newValue in
                 // Вызываем напрямую - onChange уже выполняется вне контекста рендера
                 handleSectionChange(newValue)
+            }
+            .sheet(isPresented: $isShowingUpdateNotification) {
+                UpdateNotificationView(updateService: updateService, isPresented: $isShowingUpdateNotification)
+            }
+            .onReceive(updateService.$availableUpdate.compactMap { $0 }) { _ in
+                // Показываем уведомление при обнаружении обновления
+                isShowingUpdateNotification = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UpdateError"))) { notification in
+                if let errorMessage = notification.object as? String {
+                    showAlert("Ошибка при обновлении: \(errorMessage)")
+                }
+            }
+            .sheet(isPresented: $isShowingUpdateSuccess) {
+                if let version = updateService.successVersion {
+                    UpdateSuccessView(
+                        isPresented: $isShowingUpdateSuccess,
+                        version: version
+                    )
+                    .onDisappear {
+                        // После закрытия диалога - запускаем новую версию и завершаем текущую
+                        Task {
+                            await launchNewVersionAfterUpdate()
+                        }
+                    }
+                }
+            }
+            .onReceive(updateService.$showSuccessDialog) { show in
+                if show {
+                    isShowingUpdateSuccess = true
+                }
             }
     }
     
@@ -548,6 +582,52 @@ struct RootView: View {
                         showAlert("Экспорт одного мотора будет реализован в следующей версии")
                     }
                 }
+            }
+        }
+    }
+    
+    private func launchNewVersionAfterUpdate() async {
+        // Логика запуска новой версии после успешного обновления
+        do {
+            let currentAppURL = Bundle.main.bundleURL
+            let appContainerURL = currentAppURL.deletingLastPathComponent()
+            
+            // Определяем путь к новому приложению
+            var newAppURL = appContainerURL.appendingPathComponent("AutoCreators.app")
+            
+            if !FileManager.default.fileExists(atPath: newAppURL.path) {
+                // Проверяем содержимое директории
+                let contents = try? FileManager.default.contentsOfDirectory(at: appContainerURL, includingPropertiesForKeys: nil)
+                if let appBundle = contents?.first(where: { $0.lastPathComponent.hasSuffix(".app") && $0.lastPathComponent.contains("AutoCreators") }) {
+                    newAppURL = appBundle
+                } else {
+                    // Если не нашли, используем текущий путь
+                    newAppURL = currentAppURL
+                }
+            }
+            
+            guard FileManager.default.fileExists(atPath: newAppURL.path) else {
+                return
+            }
+            
+            // Запускаем новую версию
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            
+            NSWorkspace.shared.openApplication(
+                at: newAppURL,
+                configuration: configuration
+            ) { app, error in
+                if let error = error {
+                    LoggingService.shared.error("UpdateService: Failed to launch new version", error: error)
+                } else {
+                    LoggingService.shared.info("UpdateService: New version launched successfully")
+                }
+            }
+            
+            // Завершаем текущую версию с небольшой задержкой
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                NSApplication.shared.terminate(nil)
             }
         }
     }

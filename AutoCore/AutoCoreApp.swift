@@ -11,6 +11,13 @@ import AppKit
 @main
 struct AutoCoreApp: App {
     @StateObject private var appState = AppState()
+    
+    init() {
+        // Запускаем сервис обновлений при старте приложения
+        Task { @MainActor in
+            UpdateService.shared.start()
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
