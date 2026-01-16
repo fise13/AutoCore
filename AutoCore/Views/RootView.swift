@@ -204,17 +204,28 @@ struct RootView: View {
         }
     }
 
+    @MainActor
     private func openImportPanel() {
+        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем begin с completion handler
         let panel = NSOpenPanel()
         panel.title = "Выберите Excel файл"
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
+        
+        // begin - правильный способ для SwiftUI, не блокирует поток
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            importViewModel.load(url: url)
-            isShowingImportPreview = true
+            guard response == .OK, let url = panel.url else {
+                // Пользователь отменил - ничего не делаем
+                return
+            }
+            
+            // Обрабатываем выбранный файл на главном потоке
+            Task { @MainActor in
+                self.importViewModel.load(url: url)
+                self.isShowingImportPreview = true
+            }
         }
     }
 
@@ -223,58 +234,82 @@ struct RootView: View {
         performExport(selectedSpecificSheetIDs: nil)
     }
     
+    @MainActor
     private func performExport(selectedSpecificSheetIDs: Set<Int64>?) {
+        // КАНОНИЧЕСКИЙ способ для SwiftUI: используем begin с completion handler
+        // Это асинхронный, неблокирующий вызов
         let panel = NSSavePanel()
         panel.title = "Экспорт Excel"
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
         panel.nameFieldStringValue = "autocore.xlsx"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        
+        // begin - правильный способ для SwiftUI, не блокирует поток
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
+            guard response == .OK, let url = panel.url else {
+                // Пользователь отменил - ничего не делаем
+                return
+            }
             
-            Task {
-                do {
-                    // Проверяем, есть ли данные
-                    let allMotors = try appViewModel.database.fetchMotors(
-                        filter: DatabaseService.MotorFilter(availability: .all),
-                        limit: nil,
-                        offset: 0
-                    )
-                    let engines = try appViewModel.database.fetchEngines(brandID: nil)
-                    
-                    if allMotors.isEmpty && engines.isEmpty {
-                        await MainActor.run {
-                            showAlert("Нет данных для экспорта")
-                        }
-                        return
-                    }
-                    
-                    // Выполняем экспорт с выбранными специфичными листами
-                    let result = try ExcelExportService().export(
-                        database: appViewModel.database,
-                        to: url,
-                        selectedSpecificSheetIDs: selectedSpecificSheetIDs
-                    )
-                    
-                    await MainActor.run {
-                        let message = """
-                        Экспорт завершён
-
-                        Листов: \(result.sheetsCount)
-                        Моторов: \(result.motorsCount)
-                        Проданных: \(result.soldMotorsCount)
-                        Специфичных листов: \(result.specificSheetsCount)
-
-                        Файл: \(url.path)
-                        """
-                        showAlert(message)
-                    }
-                } catch {
-                    await MainActor.run {
-                        showAlert("Ошибка экспорта: \(error.localizedDescription)")
-                    }
-                }
+            // Выполняем экспорт после выбора файла
+            Task { @MainActor in
+                await self.handleExport(url: url, selectedSpecificSheetIDs: selectedSpecificSheetIDs)
             }
         }
+    }
+    
+    @MainActor
+    private func handleExport(url: URL, selectedSpecificSheetIDs: Set<Int64>?) async {
+        // Показываем индикатор загрузки через appViewModel
+        appViewModel.isLoading = true
+        
+        do {
+            // Проверяем, есть ли данные (выполняем в фоне)
+            let allMotors = try await Task.detached(priority: .userInitiated) {
+                try self.appViewModel.database.fetchMotors(
+                    filter: DatabaseService.MotorFilter(availability: .all),
+                    limit: nil,
+                    offset: 0
+                )
+            }.value
+            
+            let engines = try await Task.detached(priority: .userInitiated) {
+                try self.appViewModel.database.fetchEngines(brandID: nil)
+            }.value
+            
+            if allMotors.isEmpty && engines.isEmpty {
+                showAlert("Нет данных для экспорта")
+                appViewModel.isLoading = false
+                return
+            }
+            
+            // Выполняем экспорт в фоне (это может занять время)
+            let result = try await Task.detached(priority: .userInitiated) {
+                try ExcelExportService().export(
+                    database: self.appViewModel.database,
+                    to: url,
+                    selectedSpecificSheetIDs: selectedSpecificSheetIDs
+                )
+            }.value
+            
+            // Показываем результат на главном потоке
+            let message = """
+            Экспорт завершён
+
+            Листов: \(result.sheetsCount)
+            Моторов: \(result.motorsCount)
+            Проданных: \(result.soldMotorsCount)
+            Специфичных листов: \(result.specificSheetsCount)
+
+            Файл: \(url.path)
+            """
+            showAlert(message)
+        } catch {
+            showAlert("Ошибка экспорта: \(error.localizedDescription)")
+        }
+        
+        appViewModel.isLoading = false
     }
 }
 private extension RootView {
