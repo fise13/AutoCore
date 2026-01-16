@@ -22,7 +22,7 @@ struct AutoCoreApp: App {
     var body: some Scene {
         WindowGroup {
             if let appViewModel = appState.appViewModel {
-                RootView(appViewModel: appViewModel)
+                RootView(appViewModel: appViewModel, appState: appState)
             } else {
                 ContentUnavailableView("Ошибка базы данных", systemImage: "exclamationmark.triangle.fill")
                     .overlay(alignment: .bottom) {

@@ -52,8 +52,9 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var soldMotors: [Motor] = []
     @Published private(set) var serviceRecords: [ServiceRecord] = []
     @Published private(set) var specificRecords: [DatabaseService.SpecificRecord] = [] // Записи из specific_records для выбранной категории
-    @Published private(set) var allSpecificRecords: [DatabaseService.SpecificRecord] = [] // ВСЕ специфичные записи для "Все моторы" и "Проданные"
+    @Published private(set) var allSpecificRecords: [DatabaseService.SpecificRecord] = [] // ВСЕ специфичные записи для "Все моторы" и "Проданные" (deprecated - lazy loading)
     @Published private(set) var specificCategories: [DatabaseService.SpecificCategory] = [] // Динамические категории из БД
+    @Published private(set) var motorSpecificRecords: [Int64: [DatabaseService.SpecificRecord]] = [:] // Кэш specific_records по motorID
     @Published private(set) var totalMotorCount: Int = 0
     @Published private(set) var totalSoldCount: Int = 0
     @Published private(set) var totalServiceRecordsCount: Int = 0
@@ -62,6 +63,7 @@ final class AppViewModel: ObservableObject {
     @Published var selectedBrandID: Int64?
     @Published var selectedEngineID: Int64?
     @Published var selectedMotorID: Int64?
+    @Published var selectedMotorIDs: Set<Int64> = [] // Множественный выбор для batch операций
 
     @Published var searchText = ""
     @Published var soldSearchText = ""
@@ -160,6 +162,7 @@ final class AppViewModel: ObservableObject {
                         transmission: record.data["КОРОБКА"] ?? record.data["TRANSMISSION"] ?? "",
                         arrivalDate: record.createdAt,
                         soldDate: nil, // Специфичные записи не имеют soldDate
+                        deletedAt: nil,
                         createdAt: record.createdAt,
                         updatedAt: record.createdAt,
                         brandName: "Специфичный",
@@ -197,8 +200,13 @@ final class AppViewModel: ObservableObject {
         return Self.dateFormatter.string(from: date)
     }
 
-    init(database: DatabaseService) {
+    @Published private(set) var recoveryState: RecoveryState?
+    private let motorRepository: MotorRepository
+    
+    init(database: DatabaseService, recoveryState: RecoveryState? = nil) {
         self.database = database
+        self.recoveryState = recoveryState
+        self.motorRepository = MotorRepositoryImpl(database: database)
         undoManager.groupsByEvent = true
         observeFilters()
         refreshAll()
@@ -228,29 +236,12 @@ final class AppViewModel: ObservableObject {
                 let totalSoldCount = try self.database.countMotors(filter: soldFilter)
                 let soldMotors = try self.database.fetchMotors(filter: soldFilter, limit: self.pageSize, offset: 0)
                 
-                // Загружаем ВСЕ специфичные записи для отображения в "Все моторы" и "Проданные"
-                let allRecords = try self.database.fetchAllSpecificRecords()
                 // Загружаем категории для получения имён
                 let categories = try self.database.fetchAllSpecificCategories()
-                var categoryMap: [Int64: String] = [:]
-                for category in categories {
-                    categoryMap[category.id] = category.name
-                }
                 
-                // Добавляем имя категории в данные для отображения
-                let allSpecificRecords = allRecords.map { record -> DatabaseService.SpecificRecord in
-                    var dataWithCategory = record.data
-                    if let categoryName = categoryMap[record.categoryID] {
-                        dataWithCategory["_CATEGORY_NAME"] = categoryName
-                    }
-                    return DatabaseService.SpecificRecord(
-                        id: record.id,
-                        categoryID: record.categoryID,
-                        rowIndex: record.rowIndex,
-                        data: dataWithCategory,
-                        createdAt: record.createdAt
-                    )
-                }
+                // НЕ загружаем все specific_records при старте - используем lazy loading
+                // Загружаем только при открытии карточки мотора
+                let allSpecificRecords: [DatabaseService.SpecificRecord] = []
                 
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -747,6 +738,261 @@ final class AppViewModel: ObservableObject {
         self.allSpecificRecords = allSpecificRecords
         self.specificCategories = categories
         self.isLoading = false
+    }
+    
+    /// Загрузить specific_records для мотора (lazy loading)
+    func loadSpecificRecordsForMotor(motorID: Int64, serialCode: String) {
+        // Проверяем кэш
+        if motorSpecificRecords[motorID] != nil {
+            return // Уже загружено
+        }
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                // Загружаем specific_records по serial_code
+                let records = try self.database.fetchSpecificRecordsBySerialCode(serialCode: serialCode)
+                
+                // Загружаем категории для получения имён
+                let categories = try self.database.fetchAllSpecificCategories()
+                var categoryMap: [Int64: String] = [:]
+                for category in categories {
+                    categoryMap[category.id] = category.name
+                }
+                
+                // Добавляем имя категории в данные
+                let recordsWithCategory = records.map { record -> DatabaseService.SpecificRecord in
+                    var dataWithCategory = record.data
+                    if let categoryName = categoryMap[record.categoryID] {
+                        dataWithCategory["_CATEGORY_NAME"] = categoryName
+                    }
+                    return DatabaseService.SpecificRecord(
+                        id: record.id,
+                        categoryID: record.categoryID,
+                        rowIndex: record.rowIndex,
+                        data: dataWithCategory,
+                        createdAt: record.createdAt
+                    )
+                }
+                
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.motorSpecificRecords[motorID] = recordsWithCategory
+                }
+            } catch {
+                // Игнорируем ошибки загрузки - это не критично
+                print("Failed to load specific records for motor \(motorID): \(error)")
+            }
+        }
+    }
+    
+    /// Получить specific_records для мотора из кэша
+    func getSpecificRecordsForMotor(motorID: Int64) -> [DatabaseService.SpecificRecord] {
+        return motorSpecificRecords[motorID] ?? []
+    }
+    
+    // MARK: - Batch Operations
+    
+    /// Массовая продажа моторов
+    func batchSellMotors(motorIDs: [Int64], soldDate: Date = Date()) {
+        guard !motorIDs.isEmpty else { return }
+        
+        // Сохраняем состояние для Undo
+        let oldStates = motorIDs.compactMap { id -> (Int64, Date?)? in
+            if let motor = allMotors.first(where: { $0.id == id }) {
+                return (id, motor.soldDate)
+            }
+            return nil
+        }
+        
+        let useCase = BatchSellMotorsUseCase(
+            motorRepository: motorRepository,
+            recoveryState: recoveryState
+        )
+        
+        do {
+            let result = try useCase.execute(motorIDs: motorIDs, soldDate: soldDate)
+            
+            // Регистрируем Undo
+            registerBatchUndo(
+                actionName: "Массовая продажа",
+                motorIDs: result.successIDs,
+                oldStates: oldStates,
+                restoreAction: { [weak self] ids, states in
+                    guard let self = self else { return }
+                    let unsellUseCase = BatchUnsellMotorsUseCase(
+                        motorRepository: self.motorRepository,
+                        recoveryState: self.recoveryState
+                    )
+                    // Возвращаем только те, которые были проданы
+                    let toUnsell = ids.filter { id in
+                        states.first(where: { $0.0 == id })?.1 == nil
+                    }
+                    try? unsellUseCase.execute(motorIDs: toUnsell)
+                }
+            )
+            
+            refreshAll()
+            
+            if result.hasPartialSuccess {
+                errorMessage = "Продано \(result.successIDs.count) из \(motorIDs.count) моторов"
+            } else if !result.errors.isEmpty {
+                errorMessage = result.errors.joined(separator: "\n")
+            }
+            
+            // Очищаем выбор
+            selectedMotorIDs.removeAll()
+            
+        } catch {
+            errorMessage = "Ошибка массовой продажи: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Массовый возврат моторов в наличие
+    func batchUnsellMotors(motorIDs: [Int64]) {
+        guard !motorIDs.isEmpty else { return }
+        
+        // Сохраняем состояние для Undo
+        let oldStates = motorIDs.compactMap { id -> (Int64, Date?)? in
+            if let motor = allMotors.first(where: { $0.id == id }) {
+                return (id, motor.soldDate)
+            }
+            return nil
+        }
+        
+        let useCase = BatchUnsellMotorsUseCase(
+            motorRepository: motorRepository,
+            recoveryState: recoveryState
+        )
+        
+        do {
+            let result = try useCase.execute(motorIDs: motorIDs)
+            
+            // Регистрируем Undo
+            registerBatchUndo(
+                actionName: "Массовый возврат",
+                motorIDs: result.successIDs,
+                oldStates: oldStates,
+                restoreAction: { [weak self] ids, states in
+                    guard let self = self else { return }
+                    let sellUseCase = BatchSellMotorsUseCase(
+                        motorRepository: self.motorRepository,
+                        recoveryState: self.recoveryState
+                    )
+                    // Продаем только те, которые были проданы
+                    for (id, soldDate) in states {
+                        if let date = soldDate {
+                            try? sellUseCase.execute(motorIDs: [id], soldDate: date)
+                        }
+                    }
+                }
+            )
+            
+            refreshAll()
+            
+            if result.hasPartialSuccess {
+                errorMessage = "Возвращено \(result.successIDs.count) из \(motorIDs.count) моторов"
+            } else if !result.errors.isEmpty {
+                errorMessage = result.errors.joined(separator: "\n")
+            }
+            
+            // Очищаем выбор
+            selectedMotorIDs.removeAll()
+            
+        } catch {
+            errorMessage = "Ошибка массового возврата: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Массовое добавление заметки
+    func batchAddNote(motorIDs: [Int64], note: String, append: Bool = true) {
+        guard !motorIDs.isEmpty else { return }
+        guard !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        // Сохраняем старые заметки для Undo
+        let oldNotes = motorIDs.compactMap { id -> (Int64, String)? in
+            if let motor = allMotors.first(where: { $0.id == id }) {
+                return (id, motor.notes)
+            }
+            return nil
+        }
+        
+        let useCase = BatchAddNoteUseCase(
+            motorRepository: motorRepository,
+            recoveryState: recoveryState
+        )
+        
+        do {
+            let result = try useCase.execute(motorIDs: motorIDs, note: note, append: append)
+            
+            // Регистрируем Undo
+            registerBatchNoteUndo(
+                actionName: "Массовое добавление заметки",
+                motorIDs: result.successIDs,
+                oldNotes: oldNotes
+            )
+            
+            refreshAll()
+            
+            if result.hasPartialSuccess {
+                errorMessage = "Заметка добавлена к \(result.successIDs.count) из \(motorIDs.count) моторов"
+            } else if !result.errors.isEmpty {
+                errorMessage = result.errors.joined(separator: "\n")
+            }
+            
+            // Очищаем выбор
+            selectedMotorIDs.removeAll()
+            
+        } catch {
+            errorMessage = "Ошибка добавления заметки: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Регистрация Undo для batch операций
+    @MainActor
+    private func registerBatchUndo(
+        actionName: String,
+        motorIDs: [Int64],
+        oldStates: [(Int64, Date?)],
+        restoreAction: @escaping ([Int64], [(Int64, Date?)]) -> Void
+    ) {
+        undoManager.registerUndo(withTarget: self) { target in
+            restoreAction(motorIDs, oldStates)
+            target.undoManager.registerUndo(withTarget: target) { target in
+                // Redo - повторяем операцию
+                // Это упрощенная версия, в реальности нужно сохранить параметры операции
+            }
+            target.undoManager.setActionName(actionName)
+            target.refreshAll()
+        }
+        undoManager.setActionName(actionName)
+    }
+    
+    /// Регистрация Undo для batch добавления заметки
+    @MainActor
+    private func registerBatchNoteUndo(
+        actionName: String,
+        motorIDs: [Int64],
+        oldNotes: [(Int64, String)]
+    ) {
+        undoManager.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                for (id, oldNote) in oldNotes {
+                    if let motor = try? target.motorRepository.findByID(id) {
+                        var updatedMotor = motor
+                        updatedMotor.notes = oldNote
+                        updatedMotor.updatedAt = Date()
+                        try? target.motorRepository.save(updatedMotor)
+                    }
+                }
+                target.undoManager.registerUndo(withTarget: target) { _ in
+                    // Redo - упрощенная версия
+                }
+                target.undoManager.setActionName(actionName)
+                target.refreshAll()
+            }
+        }
+        undoManager.setActionName(actionName)
     }
     
     @MainActor

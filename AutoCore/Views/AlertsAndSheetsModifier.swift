@@ -10,6 +10,7 @@ struct AlertsAndSheetsModifier: ViewModifier {
     @Binding var newCategoryName: String
     let importViewModel: ImportViewModel
     let appViewModel: AppViewModel
+    let backupService: BackupService?
     let onShowAlert: (String) -> Void
     let onCreateCategory: () -> Void
     let onExport: (Set<Int64>?) -> Void
@@ -20,10 +21,10 @@ struct AlertsAndSheetsModifier: ViewModifier {
                 ImportWizardView(
                     viewModel: importViewModel,
                     existingBrands: appViewModel.brands,
-                    onCommit: {
+                    onCommit: { _ in
                         Task { @MainActor in
                             do {
-                                let imported = try await importViewModel.commitImport(database: appViewModel.database)
+                                let imported = try await importViewModel.commitImport(database: appViewModel.database, backupService: backupService)
                                 appViewModel.refreshAll()
                                 onShowAlert("Импортировано моторов: \(imported)")
                                 isShowingImportPreview = false

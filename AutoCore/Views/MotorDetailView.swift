@@ -5,6 +5,7 @@ struct MotorDetailView: View {
     let isSold: Bool
     let onSave: (Int64, String, String, Int, String, Date, Date?) -> Void
     let onToggleSold: (Int64, Bool) -> Void
+    let onLoadSpecificRecords: ((Int64, String) -> Void)?
 
     @State private var configurationText = ""
     @State private var notesText = ""
@@ -91,9 +92,13 @@ struct MotorDetailView: View {
             .padding()
             .onAppear {
                 syncState(with: motor)
+                // Lazy loading: загружаем specific_records при открытии карточки
+                onLoadSpecificRecords?(motor.id, motor.serialCode)
             }
             .onChange(of: motor) { _, newValue in
                 syncState(with: newValue)
+                // Загружаем specific_records при смене мотора
+                onLoadSpecificRecords?(newValue.id, newValue.serialCode)
             }
         } else {
             ContentUnavailableView("Выберите мотор", systemImage: "engine.combustion")

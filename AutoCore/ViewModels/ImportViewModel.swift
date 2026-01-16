@@ -504,7 +504,10 @@ final class ImportViewModel: ObservableObject {
         return ImportNormalization.parseDateString(trimmed)
     }
     
-    func commitImport(database: DatabaseService) async throws -> Int {
+    func commitImport(database: DatabaseService, backupService: BackupService?) async throws -> Int {
+        // Создаем бэкап перед импортом
+        try? backupService?.createBackupBeforeOperation()
+        
         await MainActor.run {
             isImporting = true
             importProgress = nil

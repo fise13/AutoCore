@@ -4,6 +4,7 @@ import AppKit
 struct MotorListView: View {
     let motors: [Motor]
     @Binding var selectedMotorID: Int64?
+    @Binding var selectedMotorIDs: Set<Int64>
     let searchText: String
     let availabilityFilter: MotorAvailabilityFilter
     let isLoading: Bool
@@ -14,6 +15,10 @@ struct MotorListView: View {
     let onDuplicate: ((Motor) -> Void)?
     let onExportSelected: ((Motor) -> Void)?
     let onCellSave: (Int64, EditableCellState.EditableField, String) -> Void
+    let onBatchSell: (([Int64]) -> Void)?
+    let onBatchUnsell: (([Int64]) -> Void)?
+    let onBatchAddNote: (([Int64]) -> Void)?
+    let onOpenDetails: ((Motor) -> Void)?
     
     @StateObject private var editViewModel = InlineEditViewModel()
     @FocusState private var isTableFocused: Bool
@@ -55,7 +60,47 @@ struct MotorListView: View {
                     )
                 }
             } else {
-                Table(motors, selection: $selectedMotorID) {
+                VStack(spacing: 0) {
+                    // Batch операции toolbar
+                    if !selectedMotorIDs.isEmpty {
+                        HStack {
+                            Text("Выбрано: \(selectedMotorIDs.count)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            if let onBatchSell = onBatchSell {
+                                Button("Продать") {
+                                    onBatchSell(Array(selectedMotorIDs))
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            
+                            if let onBatchUnsell = onBatchUnsell {
+                                Button("Вернуть") {
+                                    onBatchUnsell(Array(selectedMotorIDs))
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            
+                            if let onBatchAddNote = onBatchAddNote {
+                                Button("Добавить заметку") {
+                                    onBatchAddNote(Array(selectedMotorIDs))
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            
+                            Button("Отменить выбор") {
+                                selectedMotorIDs.removeAll()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding()
+                        .background(.regularMaterial)
+                    }
+                    
+                    Table(motors, selection: $selectedMotorIDs) {
                     TableColumn("Номер двигателя") { motor in
                         makeEditableCell(motor: motor, field: .serialCode)
                             .contextMenu {
@@ -67,7 +112,8 @@ struct MotorListView: View {
                                     },
                                     onExport: {
                                         onExportSelected?(motor)
-                                    }
+                                    },
+                                    onOpenDetails: onOpenDetails != nil ? { onOpenDetails?(motor) } : nil
                                 )
                             }
                     }
@@ -90,8 +136,18 @@ struct MotorListView: View {
                         makeEditableCell(motor: motor, field: .soldDate)
                     }
                     TableColumn("Действие") { motor in
+                        HStack(spacing: 8) {
                         Button(motor.availability == .sold ? "Вернуть" : "Продать") {
                             onToggleSold(motor)
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            if let onOpenDetails = onOpenDetails {
+                                Button("Детали") {
+                                    onOpenDetails(motor)
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         }
                     }
                 }
@@ -146,6 +202,7 @@ struct MotorListView: View {
                         }
                     )
                 )
+                }
             }
         }
     }
@@ -244,6 +301,7 @@ private struct MotorContextMenu: View {
     let onToggleSold: () -> Void
     let onDuplicate: () -> Void
     let onExport: () -> Void
+    let onOpenDetails: (() -> Void)?
     
     var body: some View {
         Group {
@@ -252,12 +310,19 @@ private struct MotorContextMenu: View {
             }
             .keyboardShortcut("s", modifiers: .command)
             
+            if let onOpenDetails = onOpenDetails {
+                Button("Открыть детали") {
+                    onOpenDetails()
+                }
+                .keyboardShortcut("d", modifiers: .command)
+            }
+            
             Divider()
             
             Button("Дублировать") {
                 onDuplicate()
             }
-            .keyboardShortcut("d", modifiers: .command)
+            .keyboardShortcut("d", modifiers: [.command, .shift])
             
             Button("Экспортировать") {
                 onExport()

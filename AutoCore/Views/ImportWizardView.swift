@@ -3,7 +3,7 @@ import SwiftUI
 struct ImportWizardView: View {
     @ObservedObject var viewModel: ImportViewModel
     let existingBrands: [Brand]
-    let onCommit: () -> Void
+    let onCommit: (BackupService?) -> Void
     let onCancel: () -> Void
     
     var body: some View {
@@ -49,7 +49,9 @@ struct ImportWizardView: View {
         case .selectType:
             ImportStep2_SheetTypeSelectionView(viewModel: viewModel, existingBrands: existingBrands)
         case .preview:
-            ImportStep4_PreviewView(viewModel: viewModel, onCommit: onCommit)
+            ImportStep4_PreviewView(viewModel: viewModel, onCommit: { backupService in
+                onCommit(backupService)
+            })
         }
     }
     
@@ -84,7 +86,7 @@ struct ImportWizardView: View {
                     }
                 } else {
                     Button("Импортировать") {
-                        onCommit()
+                        onCommit(nil) // BackupService будет передан из AlertsAndSheetsModifier
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -363,7 +365,7 @@ private struct SpecificConfigRow: View {
 
 struct ImportStep4_PreviewView: View {
     @ObservedObject var viewModel: ImportViewModel
-    let onCommit: () -> Void
+    let onCommit: (BackupService?) -> Void
     
     var summary: ImportPreviewSummary {
         viewModel.buildPreviewSummary()

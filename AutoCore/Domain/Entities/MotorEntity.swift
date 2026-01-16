@@ -12,6 +12,7 @@ struct MotorEntity {
     var transmission: String
     var arrivalDate: Date
     var soldDate: Date?
+    var deletedAt: Date?
     let createdAt: Date
     var updatedAt: Date
     
@@ -56,6 +57,31 @@ struct MotorEntity {
         
         soldDate = nil
         updatedAt = Date()
+    }
+    
+    /// Мягкое удаление мотора
+    mutating func softDelete() {
+        guard deletedAt == nil else {
+            return // Уже удален
+        }
+        
+        deletedAt = Date()
+        updatedAt = Date()
+    }
+    
+    /// Восстановление мотора
+    mutating func restore() throws {
+        guard deletedAt != nil else {
+            throw DomainError.logicError(message: "Мотор не был удален")
+        }
+        
+        deletedAt = nil
+        updatedAt = Date()
+    }
+    
+    /// Проверка, удален ли мотор
+    var isDeleted: Bool {
+        deletedAt != nil
     }
 }
 

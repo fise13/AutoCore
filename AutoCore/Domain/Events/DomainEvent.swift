@@ -103,3 +103,81 @@ struct MotorDeletedEvent: DomainEvent {
         ["motor_id": motorID]
     }
 }
+
+/// Batch Motors Sold Event
+struct BatchMotorsSoldEvent: DomainEvent {
+    let eventType = "BatchMotorsSold"
+    let entityType = "Motor"
+    let entityID: Int64
+    let occurredAt: Date
+    let motorIDs: [Int64]
+    let soldDate: Date
+    
+    var payload: [String: Any] {
+        [
+            "motor_ids": motorIDs,
+            "count": motorIDs.count,
+            "sold_date": ISO8601DateFormatter().string(from: soldDate)
+        ]
+    }
+}
+
+/// Batch Motors Unsold Event
+struct BatchMotorsUnsoldEvent: DomainEvent {
+    let eventType = "BatchMotorsUnsold"
+    let entityType = "Motor"
+    let entityID: Int64
+    let occurredAt: Date
+    let motorIDs: [Int64]
+    
+    var payload: [String: Any] {
+        [
+            "motor_ids": motorIDs,
+            "count": motorIDs.count
+        ]
+    }
+}
+
+/// Batch Motors Note Added Event
+struct BatchMotorsNoteAddedEvent: DomainEvent {
+    let eventType = "BatchMotorsNoteAdded"
+    let entityType = "Motor"
+    let entityID: Int64
+    let occurredAt: Date
+    let motorIDs: [Int64]
+    let note: String
+    
+    var payload: [String: Any] {
+        [
+            "motor_ids": motorIDs,
+            "count": motorIDs.count,
+            "note": note
+        ]
+    }
+}
+
+/// Motor Soft Deleted Event
+struct MotorSoftDeletedEvent: DomainEvent {
+    let eventType = "MotorSoftDeleted"
+    let entityType = "Motor"
+    let entityID: Int64
+    let occurredAt: Date
+    let motorID: Int64
+    
+    var payload: [String: Any] {
+        ["motor_id": motorID]
+    }
+}
+
+/// Motor Restored Event
+struct MotorRestoredEvent: DomainEvent {
+    let eventType = "MotorRestored"
+    let entityType = "Motor"
+    let entityID: Int64
+    let occurredAt: Date
+    let motorID: Int64
+    
+    var payload: [String: Any] {
+        ["motor_id": motorID]
+    }
+}

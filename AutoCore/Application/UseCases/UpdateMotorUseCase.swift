@@ -6,19 +6,25 @@ final class UpdateMotorUseCase {
     private let motorRepository: MotorRepository
     private let eventBus: EventBus
     private let logger: LoggingService
+    private let recoveryState: RecoveryState?
     
     init(
         motorRepository: MotorRepository,
         eventBus: EventBus = .shared,
-        logger: LoggingService = .shared
+        logger: LoggingService = .shared,
+        recoveryState: RecoveryState? = nil
     ) {
         self.motorRepository = motorRepository
         self.eventBus = eventBus
         self.logger = logger
+        self.recoveryState = recoveryState
     }
     
     func execute(motorID: Int64, _ dto: UpdateMotorDTO) throws -> MotorEntity {
-        let correlationID = UUID().uuidString
+        // Проверка Recovery Mode
+        try recoveryState?.assertNotInRecoveryMode()
+        
+        let correlationID = UUIDv7.generateString()
         logger.info("Updating motor: \(motorID)", correlationID: correlationID)
         
         do {

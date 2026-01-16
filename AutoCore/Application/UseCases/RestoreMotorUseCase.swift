@@ -1,8 +1,9 @@
 import Foundation
 
-/// Use Case: Sell Motor
+/// Use Case: Restore Motor
+/// Восстановление мягко удаленного мотора
 @MainActor
-final class SellMotorUseCase {
+final class RestoreMotorUseCase {
     private let motorRepository: MotorRepository
     private let eventBus: EventBus
     private let logger: LoggingService
@@ -20,12 +21,12 @@ final class SellMotorUseCase {
         self.recoveryState = recoveryState
     }
     
-    func execute(motorID: Int64, soldDate: Date = Date()) throws -> MotorEntity {
+    func execute(motorID: Int64) throws -> MotorEntity {
         // Проверка Recovery Mode
         try recoveryState?.assertNotInRecoveryMode()
         
         let correlationID = UUIDv7.generateString()
-        logger.info("Selling motor: \(motorID)", correlationID: correlationID)
+        logger.info("Restoring motor: \(motorID)", correlationID: correlationID)
         
         do {
             // Загружаем мотор
@@ -33,32 +34,31 @@ final class SellMotorUseCase {
                 throw AppError.notFound(message: "Мотор с ID \(motorID) не найден")
             }
             
-            // Domain Rule: продаем мотор
-            try motor.sell(on: soldDate)
+            // Domain Rule: восстановление
+            try motor.restore()
             
             // Сохранение
             let savedMotor = try motorRepository.save(motor)
             
             // Публикация события
-            let event = MotorSoldEvent(
+            let event = MotorRestoredEvent(
                 entityID: savedMotor.id,
                 occurredAt: Date(),
-                motorID: savedMotor.id,
-                soldDate: soldDate
+                motorID: savedMotor.id
             )
             eventBus.publish(event)
             
-            logger.info("Motor sold successfully: \(motorID)", correlationID: correlationID)
+            logger.info("Motor restored successfully: \(motorID)", correlationID: correlationID)
             
             return savedMotor
         } catch let error as DomainError {
-            logger.error("Failed to sell motor", error: error, correlationID: correlationID)
+            logger.error("Failed to restore motor", error: error, correlationID: correlationID)
             throw AppError.from(error)
         } catch let error as AppError {
-            logger.error("Failed to sell motor", error: error, correlationID: correlationID)
+            logger.error("Failed to restore motor", error: error, correlationID: correlationID)
             throw error
         } catch {
-            logger.error("Failed to sell motor", error: error, correlationID: correlationID)
+            logger.error("Failed to restore motor", error: error, correlationID: correlationID)
             throw AppError.databaseError(message: error.localizedDescription)
         }
     }

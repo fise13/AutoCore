@@ -7,6 +7,7 @@ nonisolated(unsafe) final class DatabaseService {
         var availability: MotorAvailabilityFilter = .all
         var brandID: Int64? = nil
         var engineID: Int64? = nil
+        var includeDeleted: Bool = false // По умолчанию скрываем удаленные моторы
     }
 
     private let queue = DispatchQueue(label: "AutoCore.DatabaseQueue")
@@ -18,7 +19,12 @@ nonisolated(unsafe) final class DatabaseService {
         return formatter
     }()
 
-    init() throws {
+    /// Флаг read-only режима (Recovery Mode)
+    private(set) var isReadOnly: Bool = false
+
+    init(readOnly: Bool = false) throws {
+        self.isReadOnly = readOnly
+        
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -29,14 +35,44 @@ nonisolated(unsafe) final class DatabaseService {
         try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
         let dbURL = folderURL.appendingPathComponent("autocore.sqlite")
 
-        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        // В read-only режиме пробуем открыть только для чтения
+        let flags: Int32
+        if readOnly {
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        } else {
+            flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        }
+        
         if sqlite3_open_v2(dbURL.path, &db, flags, nil) != SQLITE_OK {
+            // Если не удалось открыть в read-write, пробуем read-only
+            if !readOnly {
+                sqlite3_close(db)
+                db = nil
+                self.isReadOnly = true
+                let readOnlyFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+                if sqlite3_open_v2(dbURL.path, &db, readOnlyFlags, nil) != SQLITE_OK {
             throw DatabaseError.openDatabase(message: errorMessage)
+                }
+            } else {
+                throw DatabaseError.openDatabase(message: errorMessage)
+            }
         }
 
-        // Включаем внешние ключи и создаём схему при первом запуске.
+        // Включаем внешние ключи (если не read-only)
+        if !isReadOnly {
         try execute(sql: "PRAGMA foreign_keys = ON;")
         try migrate()
+        } else {
+            // В read-only режиме просто включаем foreign keys для запросов
+            try execute(sql: "PRAGMA foreign_keys = ON;")
+        }
+    }
+    
+    /// Проверка, что операция не в read-only режиме
+    private func assertNotReadOnly() throws {
+        guard !isReadOnly else {
+            throw DatabaseError.readOnlyError(message: "База данных открыта в режиме только для чтения")
+        }
     }
 
     deinit {
@@ -87,6 +123,7 @@ nonisolated(unsafe) final class DatabaseService {
                motors.transmission,
                motors.arrival_date,
                motors.sold_date,
+               motors.deleted_at,
                motors.created_at,
                motors.updated_at,
                brands.name,
@@ -97,6 +134,11 @@ nonisolated(unsafe) final class DatabaseService {
         WHERE 1 = 1
         """
         var bindings: [SQLiteBinding] = []
+
+        // Фильтр по deleted_at (по умолчанию скрываем удаленные)
+        if !filter.includeDeleted {
+            sql += " AND motors.deleted_at IS NULL"
+        }
 
         if let brandID = filter.brandID {
             sql += " AND brands.id = ?"
@@ -139,8 +181,10 @@ nonisolated(unsafe) final class DatabaseService {
             let arrivalDate = dateFormatter.date(from: stringColumn(statement, index: 7)) ?? Date()
             let soldDateString = optionalStringColumn(statement, index: 8)
             let soldDate = soldDateString.flatMap { dateFormatter.date(from: $0) }
-            let createdAt = dateFormatter.date(from: stringColumn(statement, index: 9)) ?? Date()
-            let updatedAt = dateFormatter.date(from: stringColumn(statement, index: 10)) ?? createdAt
+            let deletedAtString = optionalStringColumn(statement, index: 9)
+            let deletedAt = deletedAtString.flatMap { dateFormatter.date(from: $0) }
+            let createdAt = dateFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
+            let updatedAt = dateFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
             return Motor(
                 id: sqlite3_column_int64(statement, 0),
                 engineID: sqlite3_column_int64(statement, 1),
@@ -151,10 +195,11 @@ nonisolated(unsafe) final class DatabaseService {
                 transmission: stringColumn(statement, index: 6),
                 arrivalDate: arrivalDate,
                 soldDate: soldDate,
+                deletedAt: deletedAt,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
-                brandName: stringColumn(statement, index: 11),
-                engineCode: stringColumn(statement, index: 12)
+                brandName: stringColumn(statement, index: 12),
+                engineCode: stringColumn(statement, index: 13)
             )
         }
     }
@@ -168,6 +213,11 @@ nonisolated(unsafe) final class DatabaseService {
         WHERE 1 = 1
         """
         var bindings: [SQLiteBinding] = []
+
+        // Фильтр по deleted_at (по умолчанию скрываем удаленные)
+        if !filter.includeDeleted {
+            sql += " AND motors.deleted_at IS NULL"
+        }
 
         if let brandID = filter.brandID {
             sql += " AND brands.id = ?"
@@ -199,6 +249,7 @@ nonisolated(unsafe) final class DatabaseService {
     }
 
     func upsertBrand(name: String) throws -> Int64 {
+        try assertNotReadOnly()
         let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty {
             throw DatabaseError.invalidInput(message: "Пустое имя бренда.")
@@ -272,8 +323,10 @@ nonisolated(unsafe) final class DatabaseService {
         quantity: Int,
         transmission: String,
         arrivalDate: Date?,
-        soldDate: Date?
+        soldDate: Date?,
+        deletedAt: Date? = nil
     ) throws -> Int64 {
+        try assertNotReadOnly()
         let normalizedSerial = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedSerial.isEmpty {
             throw DatabaseError.invalidInput(message: "Пустой серийный номер.")
@@ -287,7 +340,8 @@ nonisolated(unsafe) final class DatabaseService {
                 quantity: quantity,
                 transmission: transmission,
                 arrivalDate: arrivalDate,
-                soldDate: soldDate
+                soldDate: soldDate,
+                deletedAt: deletedAt
             )
         }
         return try singleValueInt64(
@@ -304,13 +358,15 @@ nonisolated(unsafe) final class DatabaseService {
         quantity: Int,
         transmission: String,
         arrivalDate: Date?,
-        soldDate: Date?
+        soldDate: Date?,
+        deletedAt: Date? = nil
     ) throws {
         let createdAt = dateFormatter.string(from: Date())
         let updatedAt = createdAt
         let arrivalValue = arrivalDate ?? Date()
         let arrivalString = dateFormatter.string(from: arrivalValue)
         let soldString = soldDate.map { dateFormatter.string(from: $0) }
+        let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
         // Серийный номер уникален, поэтому применяем upsert.
         // Вызывается внутри queue.sync через executeInTransactionBlock
         try executeUnlocked(
@@ -324,10 +380,11 @@ nonisolated(unsafe) final class DatabaseService {
                 transmission,
                 arrival_date,
                 sold_date,
+                deleted_at,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(serial_code) DO UPDATE SET
                 engine_id = excluded.engine_id,
                 configuration = excluded.configuration,
@@ -336,6 +393,7 @@ nonisolated(unsafe) final class DatabaseService {
                 transmission = excluded.transmission,
                 arrival_date = excluded.arrival_date,
                 sold_date = excluded.sold_date,
+                deleted_at = excluded.deleted_at,
                 updated_at = excluded.updated_at;
             """,
             bindings: [
@@ -347,6 +405,7 @@ nonisolated(unsafe) final class DatabaseService {
                 .text(transmission),
                 .text(arrivalString),
                 .textOptional(soldString),
+                .textOptional(deletedString),
                 .text(createdAt),
                 .text(updatedAt)
             ]
@@ -370,10 +429,15 @@ nonisolated(unsafe) final class DatabaseService {
         quantity: Int,
         transmission: String,
         arrivalDate: Date,
-        soldDate: Date?
+        soldDate: Date?,
+        deletedAt: Date? = nil
     ) throws {
+        try assertNotReadOnly()
         try inTransaction {
             let updatedAt = dateFormatter.string(from: Date())
+            let arrivalString = dateFormatter.string(from: arrivalDate)
+            let soldString = soldDate.map { dateFormatter.string(from: $0) }
+            let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
             try executeUnlocked(
                 sql: """
                 UPDATE motors
@@ -383,6 +447,7 @@ nonisolated(unsafe) final class DatabaseService {
                     transmission = ?,
                     arrival_date = ?,
                     sold_date = ?,
+                    deleted_at = ?,
                     updated_at = ?
                 WHERE id = ?;
                 """,
@@ -391,8 +456,9 @@ nonisolated(unsafe) final class DatabaseService {
                     .text(notes),
                     .int64(Int64(max(quantity, 1))),
                     .text(transmission),
-                    .text(dateFormatter.string(from: arrivalDate)),
-                    .textOptional(soldDate.map { dateFormatter.string(from: $0) }),
+                    .text(arrivalString),
+                    .textOptional(soldString),
+                    .textOptional(deletedString),
                     .text(updatedAt),
                     .int64(id)
                 ]
@@ -401,6 +467,7 @@ nonisolated(unsafe) final class DatabaseService {
     }
 
     func updateSoldDate(id: Int64, soldDate: Date?) throws {
+        try assertNotReadOnly()
         try inTransaction {
             let updatedAt = dateFormatter.string(from: Date())
             try executeUnlocked(
@@ -431,6 +498,7 @@ nonisolated(unsafe) final class DatabaseService {
     }
     
     func deleteMotor(id: Int64) throws {
+        try assertNotReadOnly()
         try inTransaction {
             try executeUnlocked(
                 sql: "DELETE FROM motors WHERE id = ?;",
@@ -447,6 +515,8 @@ nonisolated(unsafe) final class DatabaseService {
         entityID: Int64,
         payload: [String: Any]
     ) throws {
+        // Audit log разрешен в read-only режиме для логирования
+        // try assertNotReadOnly()
         let jsonData = try JSONSerialization.data(withJSONObject: payload)
         let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
         
@@ -725,6 +795,41 @@ nonisolated(unsafe) final class DatabaseService {
         return Int(try singleValueInt64(sql: sql + ";", bindings: bindings))
     }
     
+    // Получить specific_records по serial_code мотора
+    func fetchSpecificRecordsBySerialCode(serialCode: String) throws -> [SpecificRecord] {
+        let like = "%\(serialCode)%"
+        return try query(
+            sql: """
+            SELECT id, category_id, row_index, data_json, created_at
+            FROM specific_records
+            WHERE data_json LIKE ?
+            ORDER BY row_index ASC;
+            """,
+            bindings: [.text(like)]
+        ) { statement in
+            let dataJSON = stringColumn(statement, index: 3)
+            let createdAtString = stringColumn(statement, index: 4)
+            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            
+            // Парсим JSON
+            var data: [String: String] = [:]
+            if let jsonData = dataJSON.data(using: .utf8),
+               let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                for (key, value) in jsonObject {
+                    data[key] = "\(value)"
+                }
+            }
+            
+            return SpecificRecord(
+                id: sqlite3_column_int64(statement, 0),
+                categoryID: sqlite3_column_int64(statement, 1),
+                rowIndex: Int(sqlite3_column_int64(statement, 2)),
+                data: data,
+                createdAt: createdAt
+            )
+        }
+    }
+    
     // Поиск в specific_records по номеру двигателя или другим полям
     func searchSpecificRecords(searchText: String) throws -> [SpecificRecord] {
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -846,6 +951,41 @@ nonisolated(unsafe) final class DatabaseService {
         }
     }
     
+    // MARK: - Feature Flags Methods
+    
+    func fetchFeatureFlags() throws -> [String: Bool] {
+        return try query(
+            sql: "SELECT name, enabled FROM feature_flags;"
+        ) { statement -> (String, Bool) in
+            let name = stringColumn(statement, index: 0)
+            let enabled = sqlite3_column_int64(statement, 1) != 0
+            return (name, enabled)
+        }.reduce(into: [String: Bool]()) { result, pair in
+            result[pair.0] = pair.1
+        }
+    }
+    
+    func saveFeatureFlag(name: String, enabled: Bool) throws {
+        try assertNotReadOnly()
+        try inTransaction {
+            let updatedAt = dateFormatter.string(from: Date())
+            try executeUnlocked(
+                sql: """
+                INSERT INTO feature_flags (name, enabled, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at;
+                """,
+                bindings: [
+                    .text(name),
+                    .int64(enabled ? 1 : 0),
+                    .text(updatedAt)
+                ]
+            )
+        }
+    }
+    
     /// Оптимизация базы данных (VACUUM)
     func optimizeDatabase() throws {
         try queue.sync {
@@ -862,7 +1002,7 @@ nonisolated(unsafe) final class DatabaseService {
             create: true
         )
         
-        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.db")
+        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.sqlite")
         let backupDir = appSupport.appendingPathComponent("AutoCore/backups")
         
         try FileManager.default.createDirectory(
@@ -874,10 +1014,10 @@ nonisolated(unsafe) final class DatabaseService {
         dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let timestamp = dateFormatter.string(from: Date())
         
-        let backupPath = backupDir.appendingPathComponent("autocore_backup_\(timestamp).db")
+        let backupPath = backupDir.appendingPathComponent("autocore_backup_\(timestamp).sqlite")
         
         if FileManager.default.fileExists(atPath: dbPath.path) {
-            try FileManager.default.copyItem(at: dbPath, to: backupPath)
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: dbPath.path), to: backupPath)
         }
         
         return backupPath.path
@@ -892,6 +1032,63 @@ nonisolated(unsafe) final class DatabaseService {
         """)
 
         let currentVersion = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
+        
+        // Миграция на версию 9: Settings
+        if currentVersion < 9 {
+            try execute(sql: """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (9);")
+        }
+        
+        // Миграция на версию 8: Soft Delete
+        if currentVersion < 8 {
+            try execute(sql: """
+                ALTER TABLE motors ADD COLUMN deleted_at TEXT;
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_motors_deleted_at ON motors(deleted_at);
+            """)
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (8);")
+        }
+        
+        // Миграция на версию 7: Feature Flags
+        if currentVersion < 7 {
+            try execute(sql: """
+                CREATE TABLE IF NOT EXISTS feature_flags (
+                    name TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            
+            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_feature_flags_name ON feature_flags(name);")
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (7);")
+        }
+        
+        // Миграция на версию 6: индексы для оптимизации запросов фильтрации моторов
+        if currentVersion < 6 {
+            // Составной индекс для фильтрации по engine_id и sold_date одновременно
+            // Это оптимизирует запросы вида: WHERE engine_id = ? AND sold_date IS NOT NULL
+            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_engine_id_sold_date ON motors(engine_id, sold_date);")
+            
+            // Убеждаемся, что индекс для sold_date существует
+            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_sold_date ON motors(sold_date);")
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (6);")
+        }
         
         // Миграция на версию 5: переход от specific_sheets к specific_categories
         if currentVersion < 5 {
@@ -1310,6 +1507,44 @@ nonisolated(unsafe) final class DatabaseService {
     private var errorMessage: String {
         String(cString: sqlite3_errmsg(db))
     }
+    
+    // MARK: - Settings Methods
+    
+    /// Загрузить JSON настроек из БД
+    func getSettingsJSON() throws -> String? {
+        return try queue.sync {
+            let sql = "SELECT settings_json FROM app_settings WHERE id = 1 LIMIT 1;"
+            let statement = try prepare(sql: sql)
+            defer { sqlite3_finalize(statement) }
+            
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                return nil // Настройки еще не сохранены
+            }
+            
+            return optionalStringColumn(statement, index: 0)
+        }
+    }
+    
+    /// Сохранить JSON настроек в БД
+    func saveSettingsJSON(_ jsonString: String) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            let updatedAt = dateFormatter.string(from: Date())
+            try executeUnlocked(
+                sql: """
+                INSERT INTO app_settings (id, settings_json, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at;
+                """,
+                bindings: [
+                    .text(jsonString),
+                    .text(updatedAt)
+                ]
+            )
+        }
+    }
 }
 
 private enum SQLiteBinding {
@@ -1324,6 +1559,7 @@ private enum DatabaseError: Error {
     case prepareFailed(message: String)
     case executionFailed(message: String)
     case invalidInput(message: String)
+    case readOnlyError(message: String)
 }
 
 nonisolated(unsafe) private func stringColumn(_ statement: OpaquePointer, index: Int32) -> String {

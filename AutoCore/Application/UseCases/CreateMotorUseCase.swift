@@ -6,19 +6,25 @@ final class CreateMotorUseCase {
     private let motorRepository: MotorRepository
     private let eventBus: EventBus
     private let logger: LoggingService
+    private let recoveryState: RecoveryState?
     
     init(
         motorRepository: MotorRepository,
         eventBus: EventBus = .shared,
-        logger: LoggingService = .shared
+        logger: LoggingService = .shared,
+        recoveryState: RecoveryState? = nil
     ) {
         self.motorRepository = motorRepository
         self.eventBus = eventBus
         self.logger = logger
+        self.recoveryState = recoveryState
     }
     
     func execute(_ dto: CreateMotorDTO) throws -> MotorEntity {
-        let correlationID = UUID().uuidString
+        // Проверка Recovery Mode
+        try recoveryState?.assertNotInRecoveryMode()
+        
+        let correlationID = UUIDv7.generateString()
         logger.info("Creating motor: \(dto.serialCode)", correlationID: correlationID)
         
         do {

@@ -10,6 +10,7 @@ struct Motor: Identifiable, Hashable {
     let transmission: String
     let arrivalDate: Date
     let soldDate: Date?
+    let deletedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -18,5 +19,9 @@ struct Motor: Identifiable, Hashable {
 
     var availability: MotorAvailability {
         soldDate == nil ? .available : .sold
+    }
+    
+    var isDeleted: Bool {
+        deletedAt != nil
     }
 }

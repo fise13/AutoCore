@@ -9,6 +9,7 @@ struct CustomToolbar: ToolbarContent {
     let onExport: () -> Void
     let onAdd: () -> Void
     let onSell: (() -> Void)?
+    let onSettings: () -> Void
     
     @FocusState private var isSearchFocused: Bool
     @State private var localSearchText: String = ""
@@ -84,6 +85,11 @@ struct CustomToolbar: ToolbarContent {
                     }
                     .keyboardShortcut("s", modifiers: .command)
                 }
+                
+                Button(action: onSettings) {
+                    Label("Настройки", systemImage: "gearshape.fill")
+                }
+                .keyboardShortcut(",", modifiers: .command)
             }
             .padding(.horizontal, 16)
         }

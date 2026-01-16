@@ -19,7 +19,8 @@ final class MotorRepositoryImpl: MotorRepository {
                 quantity: motor.quantity.value,
                 transmission: motor.transmission,
                 arrivalDate: motor.arrivalDate,
-                soldDate: motor.soldDate
+                soldDate: motor.soldDate,
+                deletedAt: motor.deletedAt
             )
             
             return try findByID(motorID) ?? motor
@@ -32,7 +33,8 @@ final class MotorRepositoryImpl: MotorRepository {
                 quantity: motor.quantity.value,
                 transmission: motor.transmission,
                 arrivalDate: motor.arrivalDate,
-                soldDate: motor.soldDate
+                soldDate: motor.soldDate,
+                deletedAt: motor.deletedAt
             )
             
             return try findByID(motor.id) ?? motor
@@ -41,6 +43,7 @@ final class MotorRepositoryImpl: MotorRepository {
     
     func findByID(_ id: Int64) throws -> MotorEntity? {
         var dbFilter = DatabaseService.MotorFilter()
+        dbFilter.includeDeleted = true // Для поиска по ID нужно включать удаленные
         // Fetch all motors and filter by ID in memory
         // This is not optimal but works for now
         let motors = try database.fetchMotors(filter: dbFilter)
@@ -79,6 +82,7 @@ final class MotorRepositoryImpl: MotorRepository {
             transmission: motor.transmission,
             arrivalDate: motor.arrivalDate,
             soldDate: motor.soldDate,
+            deletedAt: motor.deletedAt,
             createdAt: motor.createdAt,
             updatedAt: motor.updatedAt
         )

@@ -6,6 +6,7 @@ import Foundation
 
 struct RootView: View {
     @ObservedObject var appViewModel: AppViewModel
+    @ObservedObject var appState: AppState
     @StateObject private var importViewModel: ImportViewModel
 
     @State private var isShowingImportPicker = false
@@ -17,21 +18,33 @@ struct RootView: View {
     @State private var newCategoryName = ""
     @State private var alertMessage = ""
     @State private var isShowingAlert = false
+    @State private var isShowingBatchAddNote = false
+    @State private var batchNoteText = ""
+    @State private var batchNoteMotorIDs: [Int64] = []
     @State private var isInspectorVisible = false // Inspector скрыт по умолчанию
     @State private var isShowingUpdateNotification = false
     @State private var isShowingUpdateSuccess = false
+    @State private var isShowingSettings = false
     @StateObject private var updateService = UpdateService.shared
     
     // Окно для показа панелей (получается через WindowAccessor)
     @State private var hostWindow: NSWindow?
     
-    init(appViewModel: AppViewModel) {
+    init(appViewModel: AppViewModel, appState: AppState) {
         self.appViewModel = appViewModel
+        self.appState = appState
         _importViewModel = StateObject(wrappedValue: ImportViewModel(database: appViewModel.database))
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Recovery Mode Banner
+            if let recoveryState = appViewModel.recoveryState, recoveryState.isRecoveryMode {
+                recoveryModeBanner(recoveryState: recoveryState)
+            }
+            
         splitView
+        }
             .navigationTitle("AutoCore")
             .toolbar {
                 toolbarContent
@@ -50,6 +63,7 @@ struct RootView: View {
                 newCategoryName: $newCategoryName,
                 importViewModel: importViewModel,
                 appViewModel: appViewModel,
+                backupService: appState.backupService,
                 onShowAlert: showAlert,
                 onCreateCategory: createCategory,
                 onExport: performExport
@@ -97,6 +111,34 @@ struct RootView: View {
                     showAlert("Ошибка при обновлении: \(errorMessage)")
                 }
             }
+            .sheet(isPresented: $isShowingSettings) {
+                if let backupService = appState.backupService,
+                   let featureFlagService = appState.featureFlagService,
+                   let settingsService = appState.settingsService {
+                    SettingsView(
+                        backupService: backupService,
+                        featureFlagService: featureFlagService,
+                        settingsService: settingsService,
+                        recoveryState: appState.recoveryState
+                    )
+                }
+            }
+            .alert("Добавить заметку к \(batchNoteMotorIDs.count) моторов", isPresented: $isShowingBatchAddNote) {
+                TextField("Текст заметки", text: $batchNoteText, axis: .vertical)
+                    .lineLimit(3...10)
+                Button("Отмена", role: .cancel) {
+                    batchNoteText = ""
+                    batchNoteMotorIDs = []
+                }
+                Button("Добавить") {
+                    appViewModel.batchAddNote(motorIDs: batchNoteMotorIDs, note: batchNoteText, append: true)
+                    batchNoteText = ""
+                    batchNoteMotorIDs = []
+                }
+                .disabled(batchNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: {
+                Text("Заметка будет добавлена к существующим заметкам выбранных моторов")
+            }
             .sheet(isPresented: $isShowingUpdateSuccess) {
                 if let version = updateService.successVersion {
                     UpdateSuccessView(
@@ -118,6 +160,25 @@ struct RootView: View {
             }
     }
     
+    @ViewBuilder
+    private func recoveryModeBanner(recoveryState: RecoveryState) -> some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text("Режим восстановления")
+                .font(.headline)
+            Spacer()
+            if let message = recoveryState.recoveryMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(Color.orange.opacity(0.1))
+        .border(Color.orange.opacity(0.3), width: 1)
+    }
+    
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         CustomToolbar(
@@ -136,7 +197,8 @@ struct RootView: View {
                 if let motor = selectedMotor {
                     appViewModel.toggleSold(for: motor)
                 }
-            } : nil
+            } : nil,
+            onSettings: { isShowingSettings = true }
         )
     }
     
@@ -235,6 +297,7 @@ struct RootView: View {
                 MotorListView(
                     motors: appViewModel.filteredMotors,
                     selectedMotorID: $appViewModel.selectedMotorID,
+                    selectedMotorIDs: $appViewModel.selectedMotorIDs,
                     searchText: appViewModel.searchText,
                     availabilityFilter: appViewModel.availabilityFilter,
                     isLoading: appViewModel.isLoading,
@@ -254,6 +317,19 @@ struct RootView: View {
                     },
                     onCellSave: { motorID, field, value in
                         appViewModel.updateMotorCell(motorID: motorID, field: field, value: value)
+                    },
+                    onBatchSell: { motorIDs in
+                        appViewModel.batchSellMotors(motorIDs: motorIDs)
+                    },
+                    onBatchUnsell: { motorIDs in
+                        appViewModel.batchUnsellMotors(motorIDs: motorIDs)
+                    },
+                    onBatchAddNote: { motorIDs in
+                        showBatchAddNoteDialog(motorIDs: motorIDs)
+                    },
+                    onOpenDetails: { motor in
+                        appViewModel.selectedMotorID = motor.id
+                        isInspectorVisible = true
                     }
                 )
             }
@@ -279,6 +355,9 @@ struct RootView: View {
                     },
                     onToggleSold: { motorID, sell in
                         appViewModel.setSoldStatus(motorID: motorID, sell: sell)
+                    },
+                    onLoadSpecificRecords: { motorID, serialCode in
+                        appViewModel.loadSpecificRecordsForMotor(motorID: motorID, serialCode: serialCode)
                     }
                 )
             } else {
@@ -500,6 +579,12 @@ struct RootView: View {
     func showAlert(_ message: String) {
         alertMessage = message
         isShowingAlert = true
+    }
+    
+    func showBatchAddNoteDialog(motorIDs: [Int64]) {
+        batchNoteMotorIDs = motorIDs
+        batchNoteText = ""
+        isShowingBatchAddNote = true
     }
     
     func showCreateCategoryDialog() {
