@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		575BD2002F19000100F52A3A /* CoreXLSX in Frameworks */ = {isa = PBXBuildFile; productRef = 575BD2012F19000100F52A3A /* CoreXLSX */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		575BD1002F18FE3E00F52A3A /* AutoCore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AutoCore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				575BD2002F19000100F52A3A /* CoreXLSX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = AutoCore;
 			packageProductDependencies = (
+				575BD2012F19000100F52A3A /* CoreXLSX */,
 			);
 			productName = AutoCore;
 			productReference = 575BD1002F18FE3E00F52A3A /* AutoCore.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = 575BD0F72F18FE3E00F52A3A;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				575BD2022F19000100F52A3A /* XCRemoteSwiftPackageReference "CoreXLSX" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 575BD1012F18FE3E00F52A3A /* Products */;
 			projectDirPath = "";
@@ -259,6 +268,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -291,6 +301,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -331,6 +342,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		575BD2022F19000100F52A3A /* XCRemoteSwiftPackageReference "CoreXLSX" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/CoreOffice/CoreXLSX.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		575BD2012F19000100F52A3A /* CoreXLSX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 575BD2022F19000100F52A3A /* XCRemoteSwiftPackageReference "CoreXLSX" */;
+			productName = CoreXLSX;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 575BD0F82F18FE3E00F52A3A /* Project object */;
 }
