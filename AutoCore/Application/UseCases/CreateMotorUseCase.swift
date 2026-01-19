@@ -29,7 +29,7 @@ final class CreateMotorUseCase {
         
         do {
             // Создаем Domain Entity
-            var motor = try MotorEntity(
+            let motor = try MotorEntity(
                 id: 0, // Будет установлен после сохранения
                 engineID: dto.engineID,
                 serialCode: try SerialCode(dto.serialCode),

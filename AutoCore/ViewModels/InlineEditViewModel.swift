@@ -19,6 +19,7 @@ final class InlineEditViewModel: ObservableObject {
     // РАЗДЕЛЬНЫЕ состояния: выделение и редактирование
     @Published var selectedCell: SelectedCell?
     @Published var editingCell: EditingCell?
+    @Published var editingValue: String?
     
     var onCellSave: ((Int64, EditableCellState.EditableField, String) -> Void)?
     
@@ -29,6 +30,7 @@ final class InlineEditViewModel: ObservableObject {
             field: field,
             initialValue: currentValue
         )
+        editingValue = currentValue
         // Выделение сохраняется при входе в режим редактирования
     }
     
@@ -48,6 +50,7 @@ final class InlineEditViewModel: ObservableObject {
     /// Отменить редактирование
     func cancelEditing() {
         editingCell = nil
+        editingValue = nil
         // Выделение остается
     }
     

@@ -1,7 +1,9 @@
 import Foundation
 import SQLite3
 
-nonisolated(unsafe) final class DatabaseService {
+/// Database Service - thread-safe database operations
+/// Uses dispatch queue for serialization, safe to use from any context
+nonisolated final class DatabaseService {
     struct MotorFilter: Hashable {
         var searchText: String = ""
         var availability: MotorAvailabilityFilter = .all
@@ -694,6 +696,24 @@ nonisolated(unsafe) final class DatabaseService {
                 .text(dateFormatter.string(from: Date()))
             ]
         )
+    }
+    
+    // Обновление специфичной записи
+    func updateSpecificRecord(id: Int64, dataJSON: String) throws {
+        try assertNotReadOnly()
+        try inTransaction {
+            try executeUnlocked(
+                sql: """
+                UPDATE specific_records
+                SET data_json = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(dataJSON),
+                    .int64(id)
+                ]
+            )
+        }
     }
     
     // Методы для чтения specific_categories и specific_records
@@ -1562,14 +1582,18 @@ private enum DatabaseError: Error {
     case readOnlyError(message: String)
 }
 
-nonisolated(unsafe) private func stringColumn(_ statement: OpaquePointer, index: Int32) -> String {
+/// Thread-safe helper function for reading string columns from SQLite
+/// Safe because OpaquePointer is thread-safe for read operations in this context
+nonisolated private func stringColumn(_ statement: OpaquePointer, index: Int32) -> String {
     if let cString = sqlite3_column_text(statement, index) {
         return String(cString: cString)
     }
     return ""
 }
 
-nonisolated(unsafe) private func optionalStringColumn(_ statement: OpaquePointer, index: Int32) -> String? {
+/// Thread-safe helper function for reading optional string columns from SQLite
+/// Safe because OpaquePointer is thread-safe for read operations in this context
+nonisolated private func optionalStringColumn(_ statement: OpaquePointer, index: Int32) -> String? {
     guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
         return nil
     }

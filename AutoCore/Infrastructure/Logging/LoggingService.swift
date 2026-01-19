@@ -2,8 +2,9 @@ import Foundation
 import OSLog
 
 /// Centralized Logging Service
-final class LoggingService {
-    static let shared = LoggingService()
+/// Thread-safe logging service that can be used from any actor context
+nonisolated final class LoggingService {
+    nonisolated(unsafe) static let shared = LoggingService()
     
     private let logger = Logger(subsystem: "com.autocore", category: "App")
     private let fileLogger: FileLogger?

@@ -15,7 +15,7 @@ final class UpdateService: ObservableObject {
     /// Интервал проверки обновлений (в часах)
     private let checkIntervalHours: TimeInterval = 24
     
-    private let logger: LoggingService
+    nonisolated private let logger: LoggingService
     private var checkTimer: Timer?
     private var lastCheckDate: Date?
     

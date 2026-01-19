@@ -34,7 +34,7 @@ final class MigrationManager {
     
     private func getCurrentVersion() throws -> Int {
         // Проверяем существование таблицы schema_version
-        let tableExists = try database.tableExists("schema_version")
+        let tableExists = database.tableExists("schema_version")
         
         if !tableExists {
             // Создаем таблицу schema_version

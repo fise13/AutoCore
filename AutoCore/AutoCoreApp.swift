@@ -7,12 +7,26 @@
 
 import SwiftUI
 import AppKit
+import FirebaseCore
 
 @main
 struct AutoCoreApp: App {
-    @StateObject private var appState = AppState()
+    // Регистрация AppDelegate для инициализации Firebase
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
+    @StateObject private var appState: AppState
     
     init() {
+        // КРИТИЧНО: Инициализируем Firebase СИНХРОННО до создания AppState
+        // Это должно быть сделано ПЕРЕД любым использованием FirebaseAuth
+        if FirebaseApp.app() == nil {
+            FirebaseApp.configure()
+            print("🔥 Firebase configured in AutoCoreApp.init()")
+        }
+        
+        // Теперь безопасно создаем AppState (который создаст FirebaseAuthAdapter)
+        _appState = StateObject(wrappedValue: AppState())
+        
         // Запускаем сервис обновлений при старте приложения
         Task { @MainActor in
             UpdateService.shared.start()
@@ -21,18 +35,41 @@ struct AutoCoreApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let appViewModel = appState.appViewModel {
-                RootView(appViewModel: appViewModel, appState: appState)
-            } else {
-                ContentUnavailableView("Ошибка базы данных", systemImage: "exclamationmark.triangle.fill")
-                    .overlay(alignment: .bottom) {
-                        if let message = appState.errorMessage {
-                            Text(message)
-                                .foregroundStyle(.secondary)
-                                .padding()
+            Group {
+                // Проверка аутентификации
+                if let authViewModel = appState.authViewModel {
+                    // Используем authState напрямую для реактивности
+                    switch authViewModel.authState {
+                    case .authenticated:
+                        // Пользователь авторизован - показываем основной UI
+                        if let appViewModel = appState.appViewModel {
+                            RootView(appViewModel: appViewModel, appState: appState)
+                                .id("rootView")
+                        } else {
+                            ContentUnavailableView("Ошибка базы данных", systemImage: "exclamationmark.triangle.fill")
+                                .overlay(alignment: .bottom) {
+                                    if let message = appState.errorMessage {
+                                        Text(message)
+                                            .foregroundStyle(.secondary)
+                                            .padding()
+                                    }
+                                }
                         }
+                    case .unauthenticated, .authenticating:
+                        // Пользователь не авторизован или происходит аутентификация - показываем LoginView
+                        LoginView(authViewModel: authViewModel)
+                            .id("loginView")
                     }
+                } else {
+                    // AuthViewModel еще не инициализирован - показываем загрузку
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .onAppear {
+                            print("⏳ [AutoCoreApp] AuthViewModel not initialized yet")
+                        }
+                }
             }
+            .animation(.easeInOut(duration: 0.2), value: appState.authViewModel?.authState)
         }
         .windowStyle(.automatic)
         .commands {
@@ -56,7 +93,7 @@ struct AutoCoreApp: App {
             // Меню "Файл"
             CommandGroup(replacing: .newItem) {
                 Button("Новый мотор") {
-                    if let appViewModel = appState.appViewModel {
+                    if appState.appViewModel != nil {
                         // Открываем окно добавления мотора
                         NotificationCenter.default.post(name: NSNotification.Name("OpenAddMotor"), object: nil)
                     }
@@ -68,14 +105,14 @@ struct AutoCoreApp: App {
                 Divider()
                 
                 Button("Импорт Excel") {
-                    if let appViewModel = appState.appViewModel {
+                    if appState.appViewModel != nil {
                         NotificationCenter.default.post(name: NSNotification.Name("OpenImport"), object: nil)
                     }
                 }
                 .keyboardShortcut("i", modifiers: .command)
                 
                 Button("Экспорт Excel") {
-                    if let appViewModel = appState.appViewModel {
+                    if appState.appViewModel != nil {
                         NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
                     }
                 }

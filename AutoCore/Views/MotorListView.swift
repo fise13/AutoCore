@@ -21,14 +21,103 @@ struct MotorListView: View {
     let onOpenDetails: ((Motor) -> Void)?
     
     @StateObject private var editViewModel = InlineEditViewModel()
-    @FocusState private var isTableFocused: Bool
+    
+    /// Активная ячейка (как в Excel) – одна на всю таблицу
+    struct ActiveCell: Equatable {
+        let motorID: Int64
+        let column: Column
+    }
+    
+    /// Колонки таблицы (без row header)
+    enum Column: String, CaseIterable, Identifiable {
+        case serial
+        case configuration
+        case notes
+        case quantity
+        case transmission
+        case arrivalDate
+        case soldDate
+        case action
+        
+        var id: String { rawValue }
+        
+        var title: String {
+            switch self {
+            case .serial: return "Номер двигателя"
+            case .configuration: return "Комплектация"
+            case .notes: return "Особые отметки"
+            case .quantity: return "Кол-во"
+            case .transmission: return "Коробка"
+            case .arrivalDate: return "Дата прихода"
+            case .soldDate: return "Дата продажи"
+            case .action: return "Действие"
+            }
+        }
+        
+        /// Выравнивание текста в ячейке
+        var alignment: Alignment {
+            switch self {
+            case .quantity, .arrivalDate, .soldDate:
+                return .center
+            default:
+                return .leading
+            }
+        }
+        
+        /// Примерная ширина колонки
+        var width: CGFloat {
+            switch self {
+            case .serial: return 140
+            case .configuration: return 180
+            case .notes: return 220
+            case .quantity: return 70
+            case .transmission: return 120
+            case .arrivalDate, .soldDate: return 120
+            case .action: return 160
+            }
+        }
+    }
+    
+    @State private var activeCell: ActiveCell?
+    @State private var lastSelectedMotorIDForRange: Int64?
     
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         return formatter
     }()
-
+    
+    private static let editDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+    
+    // MARK: - Helper Methods
+    
+    private static func getCellValue(motor: Motor, field: EditableCellState.EditableField) -> String {
+        switch field {
+        case .serialCode:
+            return motor.serialCode
+        case .configuration:
+            return motor.configuration
+        case .notes:
+            return motor.notes
+        case .quantity:
+            return "\(motor.quantity)"
+        case .transmission:
+            return motor.transmission
+        case .arrivalDate:
+            return Self.editDateFormatter.string(from: motor.arrivalDate)
+        case .soldDate:
+            if let soldDate = motor.soldDate {
+                return Self.editDateFormatter.string(from: soldDate)
+            } else {
+                return ""
+            }
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
             if isLoading {
@@ -40,7 +129,7 @@ struct MotorListView: View {
                 }
                 .padding(.vertical, 8)
             }
-
+            
             if motors.isEmpty && !isLoading {
                 if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     EmptyStateView(
@@ -100,242 +189,341 @@ struct MotorListView: View {
                         .background(.regularMaterial)
                     }
                     
-                    Table(motors, selection: $selectedMotorIDs) {
-                    TableColumn("Номер двигателя") { motor in
-                        makeEditableCell(motor: motor, field: .serialCode)
-                            .contextMenu {
-                                MotorContextMenu(
-                                    motor: motor,
-                                    onToggleSold: { onToggleSold(motor) },
-                                    onDuplicate: {
-                                        onDuplicate?(motor)
-                                    },
-                                    onExport: {
-                                        onExportSelected?(motor)
-                                    },
-                                    onOpenDetails: onOpenDetails != nil ? { onOpenDetails?(motor) } : nil
-                                )
-                            }
-                    }
-                    TableColumn("Комплектация") { motor in
-                        makeEditableCell(motor: motor, field: .configuration)
-                    }
-                    TableColumn("Особые отметки") { motor in
-                        makeEditableCell(motor: motor, field: .notes)
-                    }
-                    TableColumn("Кол-во") { motor in
-                        makeEditableCell(motor: motor, field: .quantity)
-                    }
-                    TableColumn("Коробка") { motor in
-                        makeEditableCell(motor: motor, field: .transmission)
-                    }
-                    TableColumn("Дата прихода") { motor in
-                        makeEditableCell(motor: motor, field: .arrivalDate)
-                    }
-                    TableColumn("Дата продажи") { motor in
-                        makeEditableCell(motor: motor, field: .soldDate)
-                    }
-                    TableColumn("Действие") { motor in
-                        HStack(spacing: 8) {
-                        Button(motor.availability == .sold ? "Вернуть" : "Продать") {
-                            onToggleSold(motor)
-                            }
-                            .buttonStyle(.bordered)
-                            
-                            if let onOpenDetails = onOpenDetails {
-                                Button("Детали") {
-                                    onOpenDetails(motor)
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
-                    }
-                }
-                .focused($isTableFocused)
-                .onAppear {
-                    editViewModel.onCellSave = onCellSave
-                }
-                .overlay(alignment: .bottom) {
-                    if !isLoading && totalCount > 0 {
-                        HStack {
-                            Text("Показано \(motors.count) из \(totalCount)")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            Spacer()
-                        }
-                        .padding()
-                        .background(.regularMaterial)
-                    }
-                }
-                .background(
-                    KeyboardHandler(
-                        onTab: {
-                            if let editing = editViewModel.editingCell {
-                                editViewModel.moveToNextCell(
-                                    currentMotorID: editing.motorID,
-                                    currentField: editing.field,
-                                    motors: motors,
-                                    forward: true
-                                )
-                            }
-                        },
-                        onShiftTab: {
-                            if let editing = editViewModel.editingCell {
-                                editViewModel.moveToNextCell(
-                                    currentMotorID: editing.motorID,
-                                    currentField: editing.field,
-                                    motors: motors,
-                                    forward: false
-                                )
-                            }
-                        },
-                        onEnter: {
-                            if editViewModel.editingCell != nil {
-                                // Enter уже обрабатывается в TextField.onSubmit
-                            } else {
-                                // Enter → начать редактирование ВЫДЕЛЕННОЙ ячейки
-                                editViewModel.startEditingSelectedCell(motors: motors)
-                            }
-                        },
-                        onEscape: {
-                            editViewModel.cancelEditing()
-                        }
+                    // MARK: Spreadsheet Grid
+                    SpreadsheetGrid(
+                        motors: motors,
+                        selectedMotorIDs: $selectedMotorIDs,
+                        selectedMotorID: $selectedMotorID,
+                        activeCell: $activeCell,
+                        lastSelectedMotorIDForRange: $lastSelectedMotorIDForRange,
+                        editViewModel: editViewModel,
+                        onToggleSold: onToggleSold,
+                        onDuplicate: onDuplicate,
+                        onExportSelected: onExportSelected,
+                        onOpenDetails: onOpenDetails,
+                        onCellSave: onCellSave
                     )
-                )
+                    .overlay(alignment: .bottom) {
+                        if !isLoading && totalCount > 0 {
+                            HStack {
+                                Text("Показано \(motors.count) из \(totalCount)")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                                Spacer()
+                            }
+                            .padding()
+                            .background(.regularMaterial)
+                        }
+                    }
+                    .background(
+                        KeyboardHandler(
+                            onTab: { }, // Tab не используется в read-only режиме
+                            onShiftTab: { }, // Shift-Tab не используется
+                            onEnter: {
+                                // Enter → начать редактирование текущей строки (первое поле)
+                                if let selectedID = selectedMotorID,
+                                   let motor = motors.first(where: { $0.id == selectedID }) {
+                                    let value = Self.getCellValue(motor: motor, field: .serialCode)
+                                    editViewModel.startEditing(motorID: motor.id, field: .serialCode, currentValue: value)
+                                }
+                            },
+                            onEscape: {
+                                editViewModel.cancelEditing()
+                            }
+                        )
+                    )
                 }
             }
         }
     }
-
-    private func formatDate(_ date: Date?) -> String {
-        guard let date else { return "" }
-        return Self.dateFormatter.string(from: date)
-    }
     
-    // MARK: - Helper для создания EditableCell
+    // MARK: - Spreadsheet Grid Implementation
     
-    private func makeEditableCell(motor: Motor, field: EditableCellState.EditableField) -> EditableCell {
-        EditableCell(
-            motor: motor,
-            field: field,
-            selectedCell: editViewModel.selectedCell,
-            editingCell: editViewModel.editingCell,
-            onSelect: { motorID, field in
-                editViewModel.selectCell(motorID: motorID, field: field)
-            },
-            onStartEditing: { motorID, field in
-                let value = getCellValue(motorID: motorID, field: field, motors: motors)
-                editViewModel.startEditing(motorID: motorID, field: field, currentValue: value)
-            },
-            onSave: { motorID, field, value in
-                editViewModel.saveCell(motorID: motorID, field: field, value: value)
-                onCellSave(motorID, field, value)
-            },
-            onCopy: { value in
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(value, forType: .string)
-            },
-            onPaste: {
-                NSPasteboard.general.string(forType: .string) ?? ""
-            },
-            onClear: {
-                if let selected = editViewModel.selectedCell {
-                    editViewModel.saveCell(motorID: selected.motorID, field: selected.field, value: "")
-                    onCellSave(selected.motorID, selected.field, "")
-                }
-            },
-            isSold: motor.availability == .sold
-        )
-    }
-    
-    private func getCellValue(motorID: Int64, field: EditableCellState.EditableField, motors: [Motor]) -> String {
-        guard let motor = motors.first(where: { $0.id == motorID }) else { return "" }
+    /// Кастомная grid-реализация в стиле Excel
+    private struct SpreadsheetGrid: View {
+        let motors: [Motor]
+        @Binding var selectedMotorIDs: Set<Int64>
+        @Binding var selectedMotorID: Int64?
+        @Binding var activeCell: MotorListView.ActiveCell?
+        @Binding var lastSelectedMotorIDForRange: Int64?
         
-        switch field {
-        case .serialCode:
-            return motor.serialCode
-        case .configuration:
-            return motor.configuration
-        case .notes:
-            return motor.notes
-        case .quantity:
-            return "\(motor.quantity)"
-        case .transmission:
-            return motor.transmission
-        case .arrivalDate:
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            return formatter.string(from: motor.arrivalDate)
-        case .soldDate:
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            if let soldDate = motor.soldDate {
-                return formatter.string(from: soldDate)
-            } else {
-                return ""
-            }
-        }
-    }
-}
-
-private struct MotorRowView: View {
-    let motor: Motor
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            if motor.availability == .sold {
-                Image(systemName: "checkmark.seal.fill")
-                    .foregroundStyle(.secondary)
-                    .imageScale(.small)
-            }
-            Text(motor.serialCode)
-                .foregroundStyle(motor.availability == .sold ? .secondary : .primary)
-        }
-    }
-}
-
-// MARK: - Context Menu
-
-private struct MotorContextMenu: View {
-    let motor: Motor
-    let onToggleSold: () -> Void
-    let onDuplicate: () -> Void
-    let onExport: () -> Void
-    let onOpenDetails: (() -> Void)?
-    
-    var body: some View {
-        Group {
-            Button(motor.availability == .sold ? "Вернуть в наличие" : "Пометить как проданный") {
-                onToggleSold()
-            }
-            .keyboardShortcut("s", modifiers: .command)
-            
-            if let onOpenDetails = onOpenDetails {
-                Button("Открыть детали") {
-                    onOpenDetails()
+        let editViewModel: InlineEditViewModel
+        let onToggleSold: (Motor) -> Void
+        let onDuplicate: ((Motor) -> Void)?
+        let onExportSelected: ((Motor) -> Void)?
+        let onOpenDetails: ((Motor) -> Void)?
+        let onCellSave: (Int64, EditableCellState.EditableField, String) -> Void
+        
+        private let gridLineColor = Color(NSColor.separatorColor)
+        
+        var body: some View {
+            VStack(spacing: 0) {
+                headerRow
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(motors.enumerated()), id: \.1.id) { index, motor in
+                            gridRow(index: index, motor: motor)
+                        }
+                    }
                 }
-                .keyboardShortcut("d", modifiers: .command)
+            }
+            .background(Color(NSColor.textBackgroundColor))
+        }
+        
+        // MARK: Header
+        
+        private var headerRow: some View {
+            HStack(spacing: 0) {
+                // Row header (пустая ячейка для угла, как в Excel)
+                Rectangle()
+                    .fill(Color(NSColor.windowBackgroundColor))
+                    .frame(width: 40, height: 24)
+                    .overlay(
+                        Rectangle()
+                            .stroke(gridLineColor, lineWidth: 0.5)
+                    )
+                
+                ForEach(MotorListView.Column.allCases) { column in
+                    Text(column.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: column.width, height: 24, alignment: .center)
+                        .background(Color(NSColor.windowBackgroundColor))
+                        .overlay(
+                            Rectangle()
+                                .stroke(gridLineColor, lineWidth: 0.5)
+                        )
+                }
+            }
+        }
+        
+        // MARK: Row
+        
+        private func gridRow(index: Int, motor: Motor) -> some View {
+            let isRowSelected = selectedMotorIDs.contains(motor.id)
+            
+            return HStack(spacing: 0) {
+                // Row header: номер строки
+                rowHeaderCell(index: index, motor: motor, isRowSelected: isRowSelected)
+                
+                ForEach(MotorListView.Column.allCases) { column in
+                    gridCell(motor: motor, column: column, isRowSelected: isRowSelected)
+                }
+            }
+            .background(isRowSelected ? Color(NSColor.controlAccentColor).opacity(0.06) : Color.clear)
+        }
+        
+        private func rowHeaderCell(index: Int, motor: Motor, isRowSelected: Bool) -> some View {
+            let isActive = activeCell?.motorID == motor.id && activeCell?.column == nil
+            
+            return Text("\(index + 1)")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 24, alignment: .trailing)
+                .background(Color(NSColor.windowBackgroundColor))
+                .overlay(
+                    Rectangle()
+                        .stroke(isActive ? Color.accentColor : gridLineColor, lineWidth: isActive ? 1.5 : 0.5)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    handleRowSelectionClick(motor: motor)
+                }
+        }
+        
+        // MARK: Cell
+        
+        private func gridCell(motor: Motor, column: MotorListView.Column, isRowSelected: Bool) -> some View {
+            let isActive = activeCell?.motorID == motor.id && activeCell?.column == column
+            
+            return Group {
+                if column == .action {
+                    actionCell(motor: motor)
+                } else {
+                    dataCell(motor: motor, column: column)
+                }
+            }
+            .frame(width: column.width, height: 24, alignment: column.alignment)
+            .background(Color.clear)
+            .overlay(
+                Rectangle()
+                    .stroke(isActive ? Color.accentColor : gridLineColor, lineWidth: isActive ? 1.5 : 0.5)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedMotorID = motor.id
+                activeCell = MotorListView.ActiveCell(motorID: motor.id, column: column)
+                handleRowSelectionClick(motor: motor)
+            }
+            .onTapGesture(count: 2) {
+                // Double-click → редактирование
+                startEditing(motor: motor, column: column)
+            }
+        }
+        
+        private func dataCell(motor: Motor, column: MotorListView.Column) -> some View {
+            let field: EditableCellState.EditableField
+            switch column {
+            case .serial: field = .serialCode
+            case .configuration: field = .configuration
+            case .notes: field = .notes
+            case .quantity: field = .quantity
+            case .transmission: field = .transmission
+            case .arrivalDate: field = .arrivalDate
+            case .soldDate: field = .soldDate
+            case .action:
+                // сюда не попадаем
+                field = .serialCode
             }
             
-            Divider()
-            
-            Button("Дублировать") {
-                onDuplicate()
+            return EditableCell(
+                motor: motor,
+                field: field,
+                editingCell: editViewModel.editingCell,
+                onStartEditing: { motorID, field in
+                    guard let motor = motors.first(where: { $0.id == motorID }) else { return }
+                    let value = MotorListView.getCellValue(motor: motor, field: field)
+                    editViewModel.startEditing(motorID: motorID, field: field, currentValue: value)
+                },
+                onSave: { motorID, field, value in
+                    editViewModel.saveCell(motorID: motorID, field: field, value: value)
+                    onCellSave(motorID, field, value)
+                },
+                onCopy: { value in
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(value, forType: .string)
+                },
+                isSold: motor.availability == .sold
+            )
+        }
+        
+        private func actionCell(motor: Motor) -> some View {
+            HStack(spacing: 6) {
+                Button(motor.availability == .sold ? "Вернуть" : "Продать") {
+                    onToggleSold(motor)
+                }
+                .buttonStyle(.bordered)
+                
+                if let onOpenDetails = onOpenDetails {
+                    Button("Детали") {
+                        onOpenDetails(motor)
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        
+        // MARK: Selection Logic
+        
+        private func handleRowSelectionClick(motor: Motor) {
+            let flags = NSEvent.modifierFlags
             
-            Button("Экспортировать") {
-                onExport()
+            if flags.contains(.command) {
+                // ⌘ — добавление/удаление из множества
+                if selectedMotorIDs.contains(motor.id) {
+                    selectedMotorIDs.remove(motor.id)
+                } else {
+                    selectedMotorIDs.insert(motor.id)
+                    lastSelectedMotorIDForRange = motor.id
+                }
+            } else if flags.contains(.shift), let lastID = lastSelectedMotorIDForRange,
+                      let startIndex = motors.firstIndex(where: { $0.id == lastID }),
+                      let endIndex = motors.firstIndex(where: { $0.id == motor.id }) {
+                // ⇧ — диапазон
+                let range = startIndex <= endIndex ? startIndex...endIndex : endIndex...startIndex
+                let ids = range.map { motors[$0].id }
+                selectedMotorIDs.formUnion(ids)
+            } else {
+                // Обычный клик — одна строка
+                selectedMotorIDs = [motor.id]
+                lastSelectedMotorIDForRange = motor.id
             }
-            .keyboardShortcut("e", modifiers: [.command, .shift])
+        }
+        
+        private func startEditing(motor: Motor, column: MotorListView.Column) {
+            guard column != .action else { return }
             
-            Divider()
-            
-            Button("Копировать номер") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(motor.serialCode, forType: .string)
+            let field: EditableCellState.EditableField
+            switch column {
+            case .serial: field = .serialCode
+            case .configuration: field = .configuration
+            case .notes: field = .notes
+            case .quantity: field = .quantity
+            case .transmission: field = .transmission
+            case .arrivalDate: field = .arrivalDate
+            case .soldDate: field = .soldDate
+            case .action:
+                return
             }
-            .keyboardShortcut("c", modifiers: .command)
+            
+            let value = MotorListView.getCellValue(motor: motor, field: field)
+            editViewModel.startEditing(motorID: motor.id, field: field, currentValue: value)
+            activeCell = MotorListView.ActiveCell(motorID: motor.id, column: column)
+        }
+    }
+    
+    private struct MotorRowView: View {
+        let motor: Motor
+        
+        var body: some View {
+            HStack(spacing: 6) {
+                if motor.availability == .sold {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.secondary)
+                        .imageScale(.small)
+                }
+                Text(motor.serialCode)
+                    .foregroundStyle(motor.availability == .sold ? .secondary : .primary)
+            }
+        }
+    }
+    
+    // MARK: - Context Menu
+    
+    private struct MotorContextMenu: View {
+        let motor: Motor
+        let onToggleSold: () -> Void
+        let onDuplicate: () -> Void
+        let onExport: () -> Void
+        let onOpenDetails: (() -> Void)?
+        
+        var body: some View {
+            Group {
+                Button(motor.availability == .sold ? "Вернуть в наличие" : "Пометить как проданный") {
+                    onToggleSold()
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                
+                if let onOpenDetails = onOpenDetails {
+                    Button("Открыть детали") {
+                        onOpenDetails()
+                    }
+                    .keyboardShortcut("d", modifiers: .command)
+                }
+                
+                Divider()
+                
+                Button("Дублировать") {
+                    onDuplicate()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                
+                Button("Экспортировать") {
+                    onExport()
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                
+                Divider()
+                
+                Button("Копировать номер") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(motor.serialCode, forType: .string)
+                }
+                .keyboardShortcut("c", modifiers: .command)
+            }
         }
     }
 }

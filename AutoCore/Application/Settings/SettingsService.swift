@@ -76,12 +76,12 @@ final class SettingsService: ObservableObject {
             do {
                 // saveSettings не async, вызываем напрямую
                 try self.repository.saveSettings(newSettings)
-                await MainActor.run {
-                    self.logger.info("Settings saved successfully")
+                await MainActor.run { [weak self] in
+                    self?.logger.info("Settings saved successfully")
                 }
             } catch {
-                await MainActor.run {
-                    self.logger.error("Failed to save settings", error: error)
+                await MainActor.run { [weak self] in
+                    self?.logger.error("Failed to save settings", error: error)
                 }
             }
         }

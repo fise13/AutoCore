@@ -47,7 +47,7 @@ struct AddMotorView: View {
                     TextField("Или введите новый бренд", text: $customBrand)
                 }
                 
-                if let selectedBrandID {
+                if selectedBrandID != nil {
                     Picker("Код двигателя", selection: $selectedEngineID) {
                         Text("Выберите двигатель").tag(Int64?.none)
                         ForEach(availableEngines) { engine in

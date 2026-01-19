@@ -17,149 +17,26 @@ struct EditableCellState: Equatable {
 
 // MARK: - Editable Cell View
 
+// MARK: - Read-Only Cell (простой Text, без состояний)
 struct EditableCell: View {
     let motor: Motor
     let field: EditableCellState.EditableField
-    let selectedCell: SelectedCell?
     let editingCell: EditingCell?
-    let onSelect: (Int64, EditableCellState.EditableField) -> Void
     let onStartEditing: (Int64, EditableCellState.EditableField) -> Void
     let onSave: (Int64, EditableCellState.EditableField, String) -> Void
     let onCopy: ((String) -> Void)?
-    let onPaste: (() -> String)?
-    let onClear: (() -> Void)?
     let isSold: Bool
     
+    // Только состояние для редактирования (создается только при редактировании)
     @State private var localValue: String = ""
     @FocusState private var isFocused: Bool
     
-    // РАЗДЕЛЬНЫЕ проверки состояния
-    private var isSelected: Bool {
-        selectedCell?.motorID == motor.id && selectedCell?.field == field
-    }
-    
+    // Проверка, редактируется ли ячейка
     private var isCurrentlyEditing: Bool {
         editingCell?.motorID == motor.id && editingCell?.field == field
     }
     
-    var body: some View {
-        Group {
-            if isCurrentlyEditing {
-                editingView
-            } else {
-                displayView
-            }
-        }
-        .contentShape(Rectangle())
-        // ДВОЙНОЙ КЛИК → редактирование (мгновенно, без задержки)
-        .onTapGesture(count: 2) {
-            if !isSold || field == .notes {
-                onStartEditing(motor.id, field)
-            }
-        }
-        // ОДИН КЛИК → выделение (БЕЗ редактирования)
-        .onTapGesture {
-            if !isCurrentlyEditing {
-                onSelect(motor.id, field)
-            }
-        }
-        // Контекстное меню для ВЫДЕЛЕННОЙ ячейки
-        .contextMenu {
-            if isSelected {
-                CellContextMenu(
-                    onCopy: {
-                        onCopy?(displayValue)
-                    },
-                    onPaste: {
-                        if let pasted = onPaste?() {
-                            onSave(motor.id, field, pasted)
-                        }
-                    },
-                    onClear: {
-                        onClear?()
-                    },
-                    canPaste: onPaste != nil,
-                    canEdit: !isSold || field == .notes
-                )
-            }
-        }
-    }
-    
-    private var displayView: some View {
-        HStack {
-            Text(displayValue)
-                .foregroundStyle(isSold && field != .notes ? .secondary : .primary)
-            Spacer()
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        // Спокойное выделение: очень легкая заливка (2% opacity) нейтрального серого
-        .background(
-            isSelected ? Color(white: 0.5, opacity: 0.02) : Color.clear
-        )
-        // Тонкая рамка 0.5px нейтрального серо-голубого цвета (как в Excel/Numbers)
-        .overlay(
-            Rectangle()
-                .strokeBorder(
-                    isSelected ? Color(white: 0.45, opacity: 0.35) : Color.clear,
-                    lineWidth: 0.5
-                )
-        )
-    }
-    
-    private var editingView: some View {
-        Group {
-            switch field {
-            case .serialCode, .configuration, .notes, .transmission:
-                TextField("", text: $localValue)
-                    .textFieldStyle(.plain)
-                    .focused($isFocused)
-                    .onSubmit {
-                        save()
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    // Фон как у системного textField (белый/светлый)
-                    .background(Color(NSColor.textBackgroundColor))
-                    // БЕЗ рамки - минималистично, как в Excel при редактировании
-                    // Только легкая тень для глубины (опционально)
-            case .quantity:
-                TextField("", text: $localValue)
-                    .textFieldStyle(.plain)
-                    .focused($isFocused)
-                    .onSubmit {
-                        save()
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    // Фон как у системного textField (белый/светлый)
-                    .background(Color(NSColor.textBackgroundColor))
-                    // БЕЗ рамки - минималистично, как в Excel при редактировании
-            case .arrivalDate, .soldDate:
-                DatePickerCell(
-                    value: $localValue,
-                    onSave: save
-                )
-            }
-        }
-        .onAppear {
-            // МГНОВЕННАЯ инициализация БЕЗ задержек
-            if let editing = editingCell {
-                localValue = editing.initialValue
-            } else {
-                localValue = editingValue
-            }
-            // Фокус устанавливается МГНОВЕННО
-            isFocused = true
-        }
-        .onChange(of: isFocused) { _, newValue in
-            // Сохранение при потере фокуса (клик вне ячейки)
-            if !newValue && isCurrentlyEditing {
-                save()
-            }
-        }
-    }
-    
+    // Вычисляемое значение для отображения
     private var displayValue: String {
         switch field {
         case .serialCode:
@@ -179,7 +56,91 @@ struct EditableCell: View {
         }
     }
     
-    private var editingValue: String {
+    var body: some View {
+        Group {
+            if isCurrentlyEditing {
+                editingView
+            } else {
+                readOnlyView
+            }
+        }
+        .contentShape(Rectangle())
+        // ТОЛЬКО двойной клик для редактирования
+        .onTapGesture(count: 2) {
+            if !isSold || field == .notes {
+                onStartEditing(motor.id, field)
+            }
+        }
+        // Контекстное меню (копирование)
+        .contextMenu {
+            CellContextMenu(
+                onCopy: {
+                    onCopy?(displayValue)
+                },
+                onEdit: {
+                    if !isSold || field == .notes {
+                        onStartEditing(motor.id, field)
+                    }
+                },
+                canEdit: !isSold || field == .notes
+            )
+        }
+    }
+    
+    // READ-ONLY VIEW - простой Text, без состояний, без модификаторов
+    private var readOnlyView: some View {
+        Text(displayValue)
+            .foregroundStyle(isSold && field != .notes ? .secondary : .primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+    }
+    
+    // EDITING VIEW - показывается только при редактировании
+    private var editingView: some View {
+        Group {
+            switch field {
+            case .serialCode, .configuration, .notes, .transmission:
+                TextField("", text: $localValue)
+                    .textFieldStyle(.plain)
+                    .focused($isFocused)
+                    .onSubmit { save() }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Color(NSColor.textBackgroundColor))
+            case .quantity:
+                TextField("", text: $localValue)
+                    .textFieldStyle(.plain)
+                    .focused($isFocused)
+                    .onSubmit { save() }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Color(NSColor.textBackgroundColor))
+            case .arrivalDate, .soldDate:
+                DatePickerCell(
+                    value: $localValue,
+                    onSave: save
+                )
+            }
+        }
+        .onAppear {
+            // Инициализация значения при начале редактирования
+            if let editing = editingCell {
+                localValue = editing.initialValue
+            } else {
+                localValue = editValue
+            }
+            isFocused = true
+        }
+        .onChange(of: isFocused) { _, newValue in
+            if !newValue && isCurrentlyEditing {
+                save()
+            }
+        }
+    }
+    
+    // Значение для редактирования
+    private var editValue: String {
         switch field {
         case .serialCode:
             return motor.serialCode
@@ -207,35 +168,41 @@ struct EditableCell: View {
         
         switch field {
         case .quantity:
-            // Валидация числа
             if let num = Int(trimmedValue), num > 0 {
                 finalValue = "\(num)"
             } else {
-                finalValue = editingValue // Откат при невалидном значении
+                finalValue = editValue // Откат при невалидном значении
             }
         case .arrivalDate, .soldDate:
-            // Для дат сохраняем как есть, парсинг будет в onSave
-            finalValue = trimmedValue.isEmpty ? editingValue : trimmedValue
+            finalValue = trimmedValue.isEmpty ? editValue : trimmedValue
         default:
             finalValue = trimmedValue
         }
         
         onSave(motor.id, field, finalValue)
-        // Состояние редактирования очищается в ViewModel через onSave
     }
+    
+    // Статические formatters для производительности
+    private static let displayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        return formatter
+    }()
+    
+    private static let editDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
     
     private func formatDate(_ date: Date?) -> String {
         guard let date else { return "" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        return formatter.string(from: date)
+        return Self.displayDateFormatter.string(from: date)
     }
     
     private func dateToString(_ date: Date?) -> String {
         guard let date else { return "" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        return Self.editDateFormatter.string(from: date)
     }
 }
 
@@ -314,9 +281,7 @@ struct DatePickerCell: View {
 
 private struct CellContextMenu: View {
     let onCopy: () -> Void
-    let onPaste: () -> Void
-    let onClear: () -> Void
-    let canPaste: Bool
+    let onEdit: () -> Void
     let canEdit: Bool
     
     var body: some View {
@@ -326,19 +291,12 @@ private struct CellContextMenu: View {
             }
             .keyboardShortcut("c", modifiers: .command)
             
-            if canPaste {
-                Button("Вставить") {
-                    onPaste()
-                }
-                .keyboardShortcut("v", modifiers: .command)
-            }
-            
-            Divider()
-            
             if canEdit {
-                Button("Очистить") {
-                    onClear()
+                Divider()
+                Button("Редактировать") {
+                    onEdit()
                 }
+                .keyboardShortcut("e", modifiers: .command)
             }
         }
     }

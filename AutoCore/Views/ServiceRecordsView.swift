@@ -2,12 +2,17 @@ import SwiftUI
 
 struct ServiceRecordsView: View {
     let records: [ServiceRecord]
-    let specificRecords: [DatabaseService.SpecificRecord] // Новые записи из specific_records
+    let specificRecords: [DatabaseService.SpecificRecord]
     let searchText: String
     let onSearchTextChange: (String) -> Void
     let isLoading: Bool
     let totalCount: Int
     let categoryName: String
+    
+    // Callback для обновления ячеек
+    let onCellSave: ((Int64, String, String) -> Void)?
+    
+    @StateObject private var editViewModel = InlineEditViewModel()
     
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -76,8 +81,8 @@ struct ServiceRecordsView: View {
                 
                 // Создаем динамическую таблицу с колонками на основе полей
                 if !allFieldNames.isEmpty {
-                    // Для специфичных записей - динамические колонки
-                    dynamicTable
+                    // Для специфичных записей - динамические колонки с редактированием
+                    editableDynamicTable
                 } else {
                     // Для старых service_records - стандартная таблица
                     legacyTable
@@ -87,7 +92,6 @@ struct ServiceRecordsView: View {
         .searchable(text: Binding(
             get: { searchText },
             set: { newValue in
-                // Вызываем напрямую - изменение произойдет после завершения рендера
                 onSearchTextChange(newValue)
             }
         ), prompt: "Поиск по номеру двигателя, данным, листу")
@@ -97,64 +101,109 @@ struct ServiceRecordsView: View {
         Self.dateFormatter.string(from: date)
     }
     
-    // Динамическая таблица с колонками на основе полей из данных
-    private var dynamicTable: some View {
-        // Ограничиваем до 7 динамических колонок (уже есть 3 фиксированные: Номер, Лист, Дата)
-        let fieldsToShow = Array(allFieldNames.prefix(7))
+    // Редактируемая динамическая таблица - упрощенная версия без ForEach
+    @ViewBuilder
+    private var editableDynamicTable: some View {
+        let fieldsToShow = Array(allFieldNames.prefix(5)) // Ограничиваем до 5 колонок для упрощения компиляции
         
-        return Table(allRecords) {
+        Table(allRecords) {
             TableColumn("Номер двигателя") { item in
-                Text(item.serialCode)
+                makeEditableCell(item: item, fieldKey: "НОМЕР ДВИГАТЕЛЯ", value: item.serialCode, field: .serialCode)
             }
+            .width(min: 150)
+            
             TableColumn("Лист") { item in
-                Text(item.sheetName)
-                    .foregroundStyle(.secondary)
+                makeEditableCell(item: item, fieldKey: "_CATEGORY_NAME", value: item.sheetName, field: .configuration)
+            }
+            .width(min: 120)
+            
+            // Фиксированные динамические колонки (до 5 штук) - оптимизировано для производительности
+            if fieldsToShow.count > 0 {
+                let fieldKey0 = fieldsToShow[0]
+                TableColumn(fieldKey0) { item in
+                    let fieldValue = item.data[fieldKey0] ?? ""
+                    makeEditableCell(item: item, fieldKey: fieldKey0, value: fieldValue, field: .notes)
+                }
+                .width(min: 120)
             }
             
-            // Создаем динамические колонки напрямую в Table через встроенные условия
-            if fieldsToShow.count > 0 {
-                TableColumn(fieldsToShow[0]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[0] })?.value ?? "")
-                }
-            }
             if fieldsToShow.count > 1 {
-                TableColumn(fieldsToShow[1]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[1] })?.value ?? "")
+                let fieldKey1 = fieldsToShow[1]
+                TableColumn(fieldKey1) { item in
+                    let fieldValue = item.data[fieldKey1] ?? ""
+                    makeEditableCell(item: item, fieldKey: fieldKey1, value: fieldValue, field: .notes)
                 }
+                .width(min: 120)
             }
+            
             if fieldsToShow.count > 2 {
-                TableColumn(fieldsToShow[2]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[2] })?.value ?? "")
+                let fieldKey2 = fieldsToShow[2]
+                TableColumn(fieldKey2) { item in
+                    let fieldValue = item.data[fieldKey2] ?? ""
+                    makeEditableCell(item: item, fieldKey: fieldKey2, value: fieldValue, field: .notes)
                 }
+                .width(min: 120)
             }
+            
             if fieldsToShow.count > 3 {
-                TableColumn(fieldsToShow[3]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[3] })?.value ?? "")
+                let fieldKey3 = fieldsToShow[3]
+                TableColumn(fieldKey3) { item in
+                    let fieldValue = item.data[fieldKey3] ?? ""
+                    makeEditableCell(item: item, fieldKey: fieldKey3, value: fieldValue, field: .notes)
                 }
+                .width(min: 120)
             }
+            
             if fieldsToShow.count > 4 {
-                TableColumn(fieldsToShow[4]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[4] })?.value ?? "")
+                let fieldKey4 = fieldsToShow[4]
+                TableColumn(fieldKey4) { item in
+                    let fieldValue = item.data[fieldKey4] ?? ""
+                    makeEditableCell(item: item, fieldKey: fieldKey4, value: fieldValue, field: .notes)
                 }
-            }
-            if fieldsToShow.count > 5 {
-                TableColumn(fieldsToShow[5]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[5] })?.value ?? "")
-                }
-            }
-            if fieldsToShow.count > 6 {
-                TableColumn(fieldsToShow[6]) { item in
-                    Text(item.dataFields.first(where: { $0.key == fieldsToShow[6] })?.value ?? "")
-                }
+                .width(min: 120)
             }
             
             TableColumn("Дата") { item in
                 Text(formatDate(item.date))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
             }
+            .width(min: 100)
         }
     }
     
+    // Helper для создания редактируемой ячейки
+    @ViewBuilder
+    private func makeEditableCell(item: RecordDisplayItem, fieldKey: String, value: String, field: EditableCellState.EditableField) -> EditableSpecificRecordCell {
+        EditableSpecificRecordCell(
+            recordID: item.id,
+            fieldKey: fieldKey,
+            value: value,
+            editingCell: editViewModel.editingCell,
+            selectedCell: editViewModel.selectedCell,
+            editingValue: editViewModel.editingValue,
+            onEditingValueChange: { newValue in
+                // Обновляем асинхронно, чтобы избежать "Publishing changes from within view updates"
+                DispatchQueue.main.async {
+                    editViewModel.editingValue = newValue
+                }
+            },
+            onSave: { newValue in
+                onCellSave?(item.id, fieldKey, newValue)
+            },
+            onStartEditing: {
+                editViewModel.startEditing(motorID: item.id, field: field, currentValue: value)
+            },
+            onSelectCell: {
+                editViewModel.selectCell(motorID: item.id, field: field)
+            },
+            onCancelEditing: {
+                editViewModel.cancelEditing()
+            }
+        )
+    }
     
     // Стандартная таблица для старых service_records
     @ViewBuilder
@@ -191,6 +240,89 @@ struct ServiceRecordsView: View {
     }
 }
 
+// MARK: - Editable Cell for Specific Records
+
+private struct EditableSpecificRecordCell: View {
+    let recordID: Int64
+    let fieldKey: String
+    let value: String
+    let editingCell: EditingCell?
+    let selectedCell: SelectedCell?
+    let editingValue: String?
+    let onEditingValueChange: (String) -> Void
+    
+    let onSave: (String) -> Void
+    let onStartEditing: () -> Void
+    let onSelectCell: () -> Void
+    let onCancelEditing: () -> Void
+    
+    // Локальное состояние для редактирования (не вызывает publishing warnings)
+    @State private var localEditingValue: String = ""
+    
+    // Используем recordID как motorID для совместимости с EditingCell
+    private var isEditing: Bool {
+        editingCell?.motorID == recordID
+    }
+    
+    private var isSelected: Bool {
+        selectedCell?.motorID == recordID
+    }
+    
+    var body: some View {
+        Group {
+            if isEditing {
+                TextField("", text: $localEditingValue)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .onAppear {
+                        // Инициализируем локальное значение при начале редактирования
+                        localEditingValue = editingValue ?? value
+                    }
+                    .onChange(of: localEditingValue) { newValue in
+                        // Синхронизируем изменения асинхронно
+                        onEditingValueChange(newValue)
+                    }
+                    .onSubmit {
+                        onSave(localEditingValue)
+                        onCancelEditing()
+                    }
+            } else {
+                Text(value.isEmpty ? " " : value)
+                    .font(.system(size: 11))
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .background(
+                        isSelected 
+                            ? Color(NSColor.selectedContentBackgroundColor).opacity(0.1)
+                            : Color(NSColor.textBackgroundColor)
+                    )
+                    .overlay(
+                        Rectangle()
+                            .stroke(
+                                isSelected ? Color.accentColor : Color.clear,
+                                lineWidth: 1.5
+                            )
+                    )
+                    .onTapGesture(count: 2) {
+                        onStartEditing()
+                    }
+                    .onTapGesture {
+                        onSelectCell()
+                    }
+            }
+        }
+        .frame(height: 22)
+        .border(Color(NSColor.separatorColor), width: 0.5)
+        .id("\(recordID)-\(fieldKey)")
+    }
+}
+
 // Объединенная модель для отображения записей
 private struct RecordDisplayItem: Identifiable {
     let id: Int64
@@ -198,6 +330,11 @@ private struct RecordDisplayItem: Identifiable {
     let sheetName: String
     let dataFields: [(key: String, value: String)]
     let date: Date
+    
+    // Оптимизированный словарь для быстрого доступа O(1) вместо O(n)
+    var data: [String: String] {
+        Dictionary(uniqueKeysWithValues: dataFields)
+    }
     
     static func fromServiceRecord(_ record: ServiceRecord) -> RecordDisplayItem {
         RecordDisplayItem(

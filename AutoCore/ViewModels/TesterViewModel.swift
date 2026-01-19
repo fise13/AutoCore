@@ -34,16 +34,17 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let brands = try await Task { try self.database.fetchBrands() }.value
-                let engines = try await Task { try self.database.fetchEngines(brandID: nil) }.value
-                let allMotors = try await Task { try self.database.fetchMotors(filter: DatabaseService.MotorFilter(), limit: nil, offset: 0) }.value
-                let soldMotors = try await Task { try self.database.fetchMotors(filter: DatabaseService.MotorFilter(availability: .sold), limit: nil, offset: 0) }.value
-                let serviceRecords = try await Task { try self.database.fetchAllServiceRecords() }.value
-                let specificCategories = try await Task { try self.database.fetchAllSpecificCategories() }.value
-                let specificRecords = try await Task { try self.database.fetchAllSpecificRecords() }.value
+                let brands = try await Task { try database.fetchBrands() }.value
+                let engines = try await Task { try database.fetchEngines(brandID: nil) }.value
+                let allMotors = try await Task { try database.fetchMotors(filter: DatabaseService.MotorFilter(), limit: nil, offset: 0) }.value
+                let soldMotors = try await Task { try database.fetchMotors(filter: DatabaseService.MotorFilter(availability: .sold), limit: nil, offset: 0) }.value
+                let serviceRecords = try await Task { try database.fetchAllServiceRecords() }.value
+                let specificCategories = try await Task { try database.fetchAllSpecificCategories() }.value
+                let specificRecords = try await Task { try database.fetchAllSpecificRecords() }.value
                 
                 var recordsByCategory: [String: Int] = [:]
                 for record in serviceRecords {
@@ -77,10 +78,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllServiceRecords() }.value
+                try await Task { try database.deleteAllServiceRecords() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все специфичные записи удалены")
@@ -100,10 +102,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllMotors() }.value
+                try await Task { try database.deleteAllMotors() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все моторы удалены")
@@ -123,10 +126,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllEngines() }.value
+                try await Task { try database.deleteAllEngines() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все двигатели удалены")
@@ -146,10 +150,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllBrands() }.value
+                try await Task { try database.deleteAllBrands() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все бренды удалены")
@@ -169,10 +174,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllSpecificCategories() }.value
+                try await Task { try database.deleteAllSpecificCategories() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все специфичные категории удалены")
@@ -192,10 +198,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllSpecificRecords() }.value
+                try await Task { try database.deleteAllSpecificRecords() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Все специфичные записи удалены")
@@ -215,10 +222,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.deleteAllData() }.value
+                try await Task { try database.deleteAllData() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Вся база данных очищена")
@@ -286,10 +294,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                try await Task { try self.database.optimizeDatabase() }.value
+                try await Task { try database.optimizeDatabase() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("База данных оптимизирована")
@@ -308,10 +317,11 @@ final class TesterViewModel: ObservableObject {
             isLoading = true
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let backupPath = try await Task { try self.database.createBackup() }.value
+                let backupPath = try await Task { try database.createBackup() }.value
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.setSuccess("Резервная копия создана: \(backupPath)")

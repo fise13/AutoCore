@@ -9,8 +9,24 @@ final class AppState: ObservableObject {
     @Published var featureFlagService: FeatureFlagService?
     @Published var backupService: BackupService?
     @Published var settingsService: SettingsService?
-
-    init() {
+    @Published var authViewModel: AuthViewModel?
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    init(authService: AuthService? = nil) {
+        // Инициализируем AuthService и AuthViewModel сразу
+        // Firebase уже инициализирован в AppDelegate при старте приложения
+        let authService = authService ?? FirebaseAuthAdapter()
+        self.authViewModel = AuthViewModel(authService: authService)
+        
+        // Подписываемся на изменения authState для принудительного обновления UI
+        authViewModel?.$authState
+            .sink { [weak self] _ in
+                // Принудительно обновляем AppState для триггера обновления UI
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        
         do {
             let database = try DatabaseService()
             

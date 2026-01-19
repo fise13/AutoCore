@@ -21,7 +21,7 @@ struct RootView: View {
     @State private var isShowingBatchAddNote = false
     @State private var batchNoteText = ""
     @State private var batchNoteMotorIDs: [Int64] = []
-    @State private var isInspectorVisible = false // Inspector скрыт по умолчанию
+    // Inspector убран - детали открываются через двойной клик или контекстное меню
     @State private var isShowingUpdateNotification = false
     @State private var isShowingUpdateSuccess = false
     @State private var isShowingSettings = false
@@ -193,12 +193,17 @@ struct RootView: View {
             onImport: { openImportPanel() },
             onExport: { Task { @MainActor in exportExcel() } },
             onAdd: { isShowingAddMotor = true },
-            onSell: selectedMotor != nil ? {
-                if let motor = selectedMotor {
+            onSell: appViewModel.selectedMotorID != nil ? {
+                if let selectedID = appViewModel.selectedMotorID,
+                   let motor = appViewModel.filteredMotors.first(where: { $0.id == selectedID }) {
                     appViewModel.toggleSold(for: motor)
                 }
             } : nil,
-            onSettings: { isShowingSettings = true }
+            onSettings: { isShowingSettings = true },
+            onLogout: appState.authViewModel != nil ? {
+                appState.authViewModel?.signOut()
+            } : nil,
+            currentUser: appState.authViewModel?.currentUser
         )
     }
     
@@ -243,10 +248,8 @@ struct RootView: View {
                     showCreateCategoryDialog()
                 }
             )
-        } content: {
-            contentView
         } detail: {
-            detailView
+            contentView
         }
     }
     
@@ -282,7 +285,10 @@ struct RootView: View {
                         },
                         isLoading: appViewModel.isLoading,
                         totalCount: appViewModel.totalServiceRecordsCount,
-                        categoryName: category.name
+                        categoryName: category.name,
+                        onCellSave: { recordID, fieldKey, value in
+                            appViewModel.updateSpecificRecordCell(recordID: recordID, fieldKey: fieldKey, value: value)
+                        }
                     )
                 } else {
                     EmptyStateView(
@@ -329,51 +335,14 @@ struct RootView: View {
                     },
                     onOpenDetails: { motor in
                         appViewModel.selectedMotorID = motor.id
-                        isInspectorVisible = true
+                        // Детали открываются через sheet или отдельное окно
                     }
                 )
             }
         }
     }
     
-    private var detailView: some View {
-        Group {
-            if isInspectorVisible {
-                MotorDetailView(
-                    motor: selectedMotor,
-                    isSold: appViewModel.selectedSection == .sold,
-                    onSave: { motorID, configuration, notes, quantity, transmission, arrivalDate, soldDate in
-                        appViewModel.updateMotorDetails(
-                            motorID: motorID,
-                            configuration: configuration,
-                            notes: notes,
-                            quantity: quantity,
-                            transmission: transmission,
-                            arrivalDate: arrivalDate,
-                            soldDate: soldDate
-                        )
-                    },
-                    onToggleSold: { motorID, sell in
-                        appViewModel.setSoldStatus(motorID: motorID, sell: sell)
-                    },
-                    onLoadSpecificRecords: { motorID, serialCode in
-                        appViewModel.loadSpecificRecordsForMotor(motorID: motorID, serialCode: serialCode)
-                    }
-                )
-            } else {
-                ContentUnavailableView("Inspector скрыт", systemImage: "sidebar.right")
-                    .frame(minWidth: 200)
-            }
-        }
-    }
-    
-    private var selectedMotor: Motor? {
-        if appViewModel.selectedSection == .sold {
-            return appViewModel.soldMotors.first(where: { $0.id == appViewModel.selectedMotorID })
-        } else {
-            return appViewModel.filteredMotors.first(where: { $0.id == appViewModel.selectedMotorID })
-        }
-    }
+    // Inspector убран - детали открываются через sheet или отдельное окно
 
     private func setupKeyboardShortcuts() {
         // Горячие клавиши обрабатываются через .keyboardShortcut в CustomToolbar

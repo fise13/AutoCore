@@ -139,9 +139,13 @@ final class BackupService: ObservableObject {
                 print("Failed to load backups: \(error)")
             }
             
+            // Сохраняем результат до перехода на MainActor
+            let finalBackupList = backupList
+            let finalLastBackup = backupList.first?.date
+            
             await MainActor.run { [weak self] in
-                self?.backups = backupList
-                self?.lastBackup = backupList.first?.date
+                self?.backups = finalBackupList
+                self?.lastBackup = finalLastBackup
             }
         }
     }
@@ -201,6 +205,6 @@ final class BackupService: ObservableObject {
             return // Недавно был бэкап
         }
         
-        try createBackup()
+        _ = try createBackup() // Результат не используется, но нужно обработать ошибку
     }
 }

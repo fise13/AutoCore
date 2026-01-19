@@ -225,19 +225,23 @@ final class AppViewModel: ObservableObject {
         let allFilter = DatabaseService.MotorFilter(availability: .all)
         let soldFilter = DatabaseService.MotorFilter(availability: .sold)
         
+        // Capture database before Task.detached to avoid main actor isolation warnings
+        let database = self.database
+        let pageSize = self.pageSize
+        
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let brands = try self.database.fetchBrands()
-                let engines = try self.database.fetchEngines(brandID: nil)
+                let brands = try database.fetchBrands()
+                let engines = try database.fetchEngines(brandID: nil)
                 // Загружаем все моторы без фильтрации (для allMotors)
-                let allMotors = try self.database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
+                let allMotors = try database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
                 let totalCount = allMotors.count
-                let totalSoldCount = try self.database.countMotors(filter: soldFilter)
-                let soldMotors = try self.database.fetchMotors(filter: soldFilter, limit: self.pageSize, offset: 0)
+                let totalSoldCount = try database.countMotors(filter: soldFilter)
+                let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 
                 // Загружаем категории для получения имён
-                let categories = try self.database.fetchAllSpecificCategories()
+                let categories = try database.fetchAllSpecificCategories()
                 
                 // НЕ загружаем все specific_records при старте - используем lazy loading
                 // Загружаем только при открытии карточки мотора
@@ -273,13 +277,15 @@ final class AppViewModel: ObservableObject {
         }
         
         let searchText = soldSearchText
+        let database = self.database
+        let pageSize = self.pageSize
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 // Загружаем проданные моторы
                 let soldFilter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
-                let soldMotors = try self.database.fetchMotors(filter: soldFilter, limit: self.pageSize, offset: 0)
-                let totalCount = try self.database.countMotors(filter: soldFilter)
+                let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
+                let totalCount = try database.countMotors(filter: soldFilter)
                 
                 // Специфичные записи НЕ добавляются в "Проданные" - только в поиск
                 await MainActor.run { [weak self] in
@@ -301,12 +307,14 @@ final class AppViewModel: ObservableObject {
         currentSoldPage += 1
         let page = currentSoldPage
         let searchText = soldSearchText
+        let database = self.database
+        let pageSize = self.pageSize
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 let filter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
-                let offset = page * self.pageSize
-                let newMotors = try self.database.fetchMotors(filter: filter, limit: self.pageSize, offset: offset)
+                let offset = page * pageSize
+                let newMotors = try database.fetchMotors(filter: filter, limit: pageSize, offset: offset)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.appendSoldMotors(newMotors)
@@ -321,10 +329,11 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshEngines() {
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let engines = try self.database.fetchEngines(brandID: nil)
+                let engines = try database.fetchEngines(brandID: nil)
                 await MainActor.run { [weak self] in
                     self?.updateEngines(engines)
                 }
@@ -339,11 +348,12 @@ final class AppViewModel: ObservableObject {
     func refreshMotors() {
         // Обновляем allMotors из БД (загружаем все моторы)
         // Фильтрация будет происходить через вычисляемое свойство filteredMotors
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 let allFilter = DatabaseService.MotorFilter(availability: .all)
-                let allMotors = try self.database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
+                let allMotors = try database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
                 await MainActor.run { [weak self] in
                     self?.updateAllMotors(allMotors)
                 }
@@ -371,15 +381,16 @@ final class AppViewModel: ObservableObject {
         arrivalDate: Date,
         soldDate: Date?
     ) {
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let brandID = try self.database.upsertBrand(name: brandName)
-                let engineID = try self.database.upsertEngine(
+                let brandID = try database.upsertBrand(name: brandName)
+                let engineID = try database.upsertEngine(
                     brandID: brandID,
                     code: ImportNormalization.normalizeEngineCode(engineCode)
                 )
-                let motorID = try self.database.insertOrUpdateMotor(
+                let motorID = try database.insertOrUpdateMotor(
                     engineID: engineID,
                     serialCode: serialCode,
                     configuration: configuration,
@@ -430,11 +441,12 @@ final class AppViewModel: ObservableObject {
         arrivalDate: Date,
         soldDate: Date?
     ) {
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 let oldMotor = try await self.getMotor(id: motorID)
-                try self.database.updateMotor(
+                try database.updateMotor(
                     id: motorID,
                     configuration: configuration,
                     notes: notes,
@@ -578,11 +590,6 @@ final class AppViewModel: ObservableObject {
             .store(in: &cancellables)
         
         // Поиск в specific_records для отображения в основном списке
-        let searchPublisher = $searchText
-            .debounce(for: .milliseconds(250), scheduler: RunLoop.main)
-            .removeDuplicates()
-            .eraseToAnyPublisher()
-        
         // Поиск в специфичных записях теперь происходит через filteredMotors
         // Не нужно отдельно загружать результаты поиска
     }
@@ -646,6 +653,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func setSoldStatus(motorID: Int64, sell: Bool) {
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -653,7 +661,7 @@ final class AppViewModel: ObservableObject {
                 let oldSoldDate = motor?.soldDate
                 let newSoldDate = sell ? Date() : nil
                 
-                try self.database.updateSoldDate(
+                try database.updateSoldDate(
                     id: motorID,
                     soldDate: newSoldDate
                 )
@@ -681,9 +689,10 @@ final class AppViewModel: ObservableObject {
     }
     
     private func getMotor(id: Int64) async throws -> Motor? {
-        try await Task.detached(priority: .userInitiated) { [weak self] in
+        let database = self.database
+        return try await Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return nil }
-            return try self.database.fetchMotors(
+            return try database.fetchMotors(
                 filter: DatabaseService.MotorFilter(),
                 limit: nil,
                 offset: 0
@@ -747,14 +756,15 @@ final class AppViewModel: ObservableObject {
             return // Уже загружено
         }
         
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 // Загружаем specific_records по serial_code
-                let records = try self.database.fetchSpecificRecordsBySerialCode(serialCode: serialCode)
+                let records = try database.fetchSpecificRecordsBySerialCode(serialCode: serialCode)
                 
                 // Загружаем категории для получения имён
-                let categories = try self.database.fetchAllSpecificCategories()
+                let categories = try database.fetchAllSpecificCategories()
                 var categoryMap: [Int64: String] = [:]
                 for category in categories {
                     categoryMap[category.id] = category.name
@@ -828,7 +838,7 @@ final class AppViewModel: ObservableObject {
                     let toUnsell = ids.filter { id in
                         states.first(where: { $0.0 == id })?.1 == nil
                     }
-                    try? unsellUseCase.execute(motorIDs: toUnsell)
+                    _ = try? unsellUseCase.execute(motorIDs: toUnsell) // Результат не используется, но нужно обработать ошибку
                 }
             )
             
@@ -882,7 +892,7 @@ final class AppViewModel: ObservableObject {
                     // Продаем только те, которые были проданы
                     for (id, soldDate) in states {
                         if let date = soldDate {
-                            try? sellUseCase.execute(motorIDs: [id], soldDate: date)
+                            _ = try? sellUseCase.execute(motorIDs: [id], soldDate: date) // Результат не используется, но нужно обработать ошибку
                         }
                     }
                 }
@@ -1022,15 +1032,16 @@ final class AppViewModel: ObservableObject {
     
     func refreshServiceRecords(categoryID: Int64) {
         let searchText = serviceRecordsSearchText
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 // Загружаем записи из specific_records по categoryID
-                let specificRecords = try self.database.fetchSpecificRecordsByCategoryID(categoryID: categoryID, searchText: searchText)
-                let specificCount = try self.database.countSpecificRecordsByCategoryID(categoryID: categoryID, searchText: searchText)
+                let specificRecords = try database.fetchSpecificRecordsByCategoryID(categoryID: categoryID, searchText: searchText)
+                let specificCount = try database.countSpecificRecordsByCategoryID(categoryID: categoryID, searchText: searchText)
 
                 // Получаем имя категории
-                let category = try self.database.fetchSpecificCategory(id: categoryID)
+                let category = try database.fetchSpecificCategory(id: categoryID)
                 let recordsWithCategoryNames = specificRecords.map { record -> DatabaseService.SpecificRecord in
                     var dataWithCategory = record.data
                     if let categoryName = category?.name {
@@ -1090,7 +1101,53 @@ final class AppViewModel: ObservableObject {
     
     // MARK: - Inline Cell Editing
     
+    // Обновление ячейки специфичной записи
+    @MainActor
+    func updateSpecificRecordCell(recordID: Int64, fieldKey: String, value: String) {
+        let database = self.database
+        let specificRecords = self.specificRecords
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                // Находим запись (получаем из захваченного массива)
+                guard let record = specificRecords.first(where: { $0.id == recordID }) else { return }
+                
+                // Обновляем данные
+                var updatedData = record.data
+                updatedData[fieldKey] = value
+                
+                // Сериализуем в JSON
+                let jsonData = try JSONSerialization.data(withJSONObject: updatedData, options: [])
+                guard let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+                
+                // Сохраняем в БД
+                try await database.updateSpecificRecord(id: recordID, dataJSON: jsonString)
+                
+                // Обновляем локальные данные
+                await MainActor.run {
+                    if let index = self.specificRecords.firstIndex(where: { $0.id == recordID }) {
+                        var updatedRecordData = record.data
+                        updatedRecordData[fieldKey] = value
+                        let updatedRecord = DatabaseService.SpecificRecord(
+                            id: record.id,
+                            categoryID: record.categoryID,
+                            rowIndex: record.rowIndex,
+                            data: updatedRecordData,
+                            createdAt: record.createdAt
+                        )
+                        self.specificRecords[index] = updatedRecord
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка обновления записи: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
     func updateMotorCell(motorID: Int64, field: EditableCellState.EditableField, value: String) {
+        let database = self.database
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -1144,7 +1201,7 @@ final class AppViewModel: ObservableObject {
                 }
                 
                 // Сохраняем изменения
-                try self.database.updateMotor(
+                try database.updateMotor(
                     id: motorID,
                     configuration: newConfiguration,
                     notes: newNotes,
