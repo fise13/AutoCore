@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SoldMotorsView: View {
     let motors: [Motor]
+    let motorPrices: [Int64: Decimal]  // Цены продажи по ID мотора
     @Binding var selectedMotorID: Int64?
     let searchText: String
     let onSearchTextChange: (String) -> Void
@@ -74,6 +75,16 @@ struct SoldMotorsView: View {
                         Text(formatDate(motor.soldDate))
                             .foregroundStyle(.secondary)
                     }
+                    TableColumn("Цена") { motor in
+                        if let price = motorPrices[motor.id] {
+                            Text(formatCurrency(price))
+                                .foregroundStyle(.primary)
+                                .fontWeight(.medium)
+                        } else {
+                            Text("—")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     TableColumn("Действие") { motor in
                         Button("Вернуть") {
                             onReturnToStock(motor)
@@ -118,6 +129,14 @@ struct SoldMotorsView: View {
     private func formatDate(_ date: Date?) -> String {
         guard let date else { return "" }
         return Self.dateFormatter.string(from: date)
+    }
+    
+    private func formatCurrency(_ amount: Decimal) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "KZT"
+        formatter.currencySymbol = "₸"
+        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
     }
 }
 

@@ -47,7 +47,11 @@ struct RootView: View {
         }
             .navigationTitle("AutoCore")
             .toolbar {
-                toolbarContent
+                Group {
+                    if appViewModel.selectedSection != .accounting {
+                        toolbarContent
+                    }
+                }
             }
             .onAppear {
                 setupKeyboardShortcuts()
@@ -82,6 +86,52 @@ struct RootView: View {
                         performExportWithSettings(settings)
                     }
                 )
+            }
+            .sheet(isPresented: $appViewModel.isShowingSellMotorSheet) {
+                if let motor = appViewModel.motorToSell,
+                   let currentUser = appState.authViewModel?.currentUser {
+                    SellMotorSheetView(
+                        motor: motor,
+                        onConfirm: { amount, paymentMethod, cashReceived, account, comment in
+                            appViewModel.sellMotorWithFinancialOperation(
+                                motorID: motor.id,
+                                saleAmount: amount,
+                                paymentMethod: paymentMethod,
+                                cashReceived: cashReceived,
+                                account: account,
+                                comment: comment,
+                                currentUser: currentUser.email
+                            )
+                        },
+                        onCancel: {
+                            appViewModel.isShowingSellMotorSheet = false
+                            appViewModel.motorToSell = nil
+                        }
+                    )
+                }
+            }
+            .sheet(isPresented: $appViewModel.isShowingRefundMotorSheet) {
+                if let motor = appViewModel.motorToRefund,
+                   let currentUser = appState.authViewModel?.currentUser {
+                    RefundMotorSheetView(
+                        motor: motor,
+                        onConfirm: { amount, paymentMethod, cashReceived, account, comment in
+                            appViewModel.refundMotorWithFinancialOperation(
+                                motorID: motor.id,
+                                refundAmount: amount,
+                                paymentMethod: paymentMethod,
+                                cashReceived: cashReceived,
+                                account: account,
+                                comment: comment,
+                                currentUser: currentUser.email
+                            )
+                        },
+                        onCancel: {
+                            appViewModel.isShowingRefundMotorSheet = false
+                            appViewModel.motorToRefund = nil
+                        }
+                    )
+                }
             }
             .onReceive(appViewModel.$errorMessage.compactMap { $0 }) { message in
                 showAlert(message)
@@ -119,7 +169,8 @@ struct RootView: View {
                         backupService: backupService,
                         featureFlagService: featureFlagService,
                         settingsService: settingsService,
-                        recoveryState: appState.recoveryState
+                        recoveryState: appState.recoveryState,
+                        databaseService: appViewModel.database
                     )
                 }
             }
@@ -256,9 +307,21 @@ struct RootView: View {
     private var contentView: some View {
         Group {
             switch appViewModel.selectedSection {
+            case .accounting:
+                AccountingView(
+                    financialOperationRepository: FinancialOperationRepositoryImpl(database: appViewModel.database),
+                    currentUser: appState.authViewModel?.currentUser?.email ?? appState.authViewModel?.currentUser?.displayName ?? "Система",
+                    recoveryState: appState.recoveryState,
+                    onSettings: { isShowingSettings = true },
+                    onLogout: appState.authViewModel != nil ? {
+                        appState.authViewModel?.signOut()
+                    } : nil,
+                    userEntity: appState.authViewModel?.currentUser
+                )
             case .sold:
                 SoldMotorsView(
                     motors: appViewModel.soldMotors,
+                    motorPrices: appViewModel.soldMotorPrices,
                     selectedMotorID: $appViewModel.selectedMotorID,
                     searchText: appViewModel.soldSearchText,
                     onSearchTextChange: { newText in
@@ -300,42 +363,34 @@ struct RootView: View {
                     )
                 }
             default:
-                MotorListView(
-                    motors: appViewModel.filteredMotors,
-                    selectedMotorID: $appViewModel.selectedMotorID,
+                MotorListViewExcel(
+                    motors: appViewModel.convertToDTOs(motors: appViewModel.filteredMotors),
                     selectedMotorIDs: $appViewModel.selectedMotorIDs,
-                    searchText: appViewModel.searchText,
-                    availabilityFilter: appViewModel.availabilityFilter,
                     isLoading: appViewModel.isLoading,
                     totalCount: appViewModel.filteredMotors.count,
-                    hasMorePages: false,
-                    onToggleSold: { motor in
-                        appViewModel.toggleSold(for: motor)
+                    onToggleSold: { motorID in
+                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                            appViewModel.toggleSold(for: motor)
+                        }
                     },
                     onLoadMore: {
                         appViewModel.loadMoreMotorsIfNeeded()
                     },
-                    onDuplicate: { motor in
-                        duplicateMotor(motor)
+                    onDuplicate: { motorID in
+                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                            duplicateMotor(motor)
+                        }
                     },
-                    onExportSelected: { motor in
-                        exportSelectedMotor(motor)
+                    onExportSelected: { motorID in
+                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                            exportSelectedMotor(motor)
+                        }
+                    },
+                    onOpenDetails: { motorID in
+                        appViewModel.selectedMotorID = motorID
                     },
                     onCellSave: { motorID, field, value in
                         appViewModel.updateMotorCell(motorID: motorID, field: field, value: value)
-                    },
-                    onBatchSell: { motorIDs in
-                        appViewModel.batchSellMotors(motorIDs: motorIDs)
-                    },
-                    onBatchUnsell: { motorIDs in
-                        appViewModel.batchUnsellMotors(motorIDs: motorIDs)
-                    },
-                    onBatchAddNote: { motorIDs in
-                        showBatchAddNoteDialog(motorIDs: motorIDs)
-                    },
-                    onOpenDetails: { motor in
-                        appViewModel.selectedMotorID = motor.id
-                        // Детали открываются через sheet или отдельное окно
                     }
                 )
             }

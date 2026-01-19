@@ -12,16 +12,20 @@ struct SettingsView: View {
     @State private var selectedSection: SettingsViewModel.SettingsSection = .general
     @State private var isAdvancedExpanded = false
     
+    let databaseService: DatabaseService
+    
     init(
         backupService: BackupService,
         featureFlagService: FeatureFlagService,
         settingsService: SettingsService,
-        recoveryState: RecoveryState
+        recoveryState: RecoveryState,
+        databaseService: DatabaseService
     ) {
         self.backupService = backupService
         self.featureFlagService = featureFlagService
         self.settingsService = settingsService
         self.recoveryState = recoveryState
+        self.databaseService = databaseService
         _viewModel = StateObject(wrappedValue: SettingsViewModel(
             settingsService: settingsService,
             recoveryState: recoveryState,
@@ -40,7 +44,7 @@ struct SettingsView: View {
                 }
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 200)
+            .frame(minWidth: 200, idealWidth: 240)
         } detail: {
             // Контент справа
             Group {
@@ -50,7 +54,11 @@ struct SettingsView: View {
                 case .features:
                     FeatureFlagsSettingsView(viewModel: viewModel)
                 case .data:
-                    DataStorageSettingsView(viewModel: viewModel)
+                    BackupManagementViewNew(
+                        backupRepository: BackupRepositoryLocalImpl(),
+                        databaseService: databaseService,
+                        recoveryState: recoveryState
+                    )
                 case .importExport:
                     ImportExportSettingsView(viewModel: viewModel)
                 case .workflow:
@@ -59,9 +67,9 @@ struct SettingsView: View {
                     AdvancedSettingsView(viewModel: viewModel, isExpanded: $isAdvancedExpanded)
                 }
             }
-            .frame(minWidth: 500)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 800, minHeight: 600)
+        .frame(minWidth: 700, minHeight: 500)
         .navigationTitle("Настройки")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {

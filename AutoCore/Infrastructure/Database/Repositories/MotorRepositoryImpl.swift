@@ -71,7 +71,7 @@ final class MotorRepositoryImpl: MotorRepository {
         try database.deleteMotor(id: id)
     }
     
-    private func mapToEntity(_ motor: Motor) throws -> MotorEntity {
+    func mapToEntity(_ motor: Motor) throws -> MotorEntity {
         return MotorEntity(
             id: motor.id,
             engineID: motor.engineID,

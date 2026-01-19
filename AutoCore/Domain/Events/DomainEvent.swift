@@ -181,3 +181,27 @@ struct MotorRestoredEvent: DomainEvent {
         ["motor_id": motorID]
     }
 }
+
+/// Financial Operation Created Event
+struct FinancialOperationCreatedEvent: DomainEvent {
+    let eventType = "FinancialOperationCreated"
+    let entityType = "FinancialOperation"
+    let entityID: Int64
+    let occurredAt: Date
+    let operationID: Int64
+    let type: FinancialOperationEntity.OperationType
+    let amount: Decimal
+    let relatedMotorID: Int64?
+    
+    var payload: [String: Any] {
+        var p: [String: Any] = [
+            "operation_id": operationID,
+            "type": type.rawValue,
+            "amount": String(describing: amount)
+        ]
+        if let motorID = relatedMotorID {
+            p["related_motor_id"] = motorID
+        }
+        return p
+    }
+}

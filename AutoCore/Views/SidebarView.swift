@@ -48,6 +48,19 @@ struct SidebarView: View {
                                 }
                             }
                         )
+                        
+                        SidebarButton(
+                            title: NavigationSection.accounting.title,
+                            icon: "dollarsign.circle.fill",
+                            isSelected: selectedSection.id == NavigationSection.accounting.id,
+                            hoveredItem: $hoveredItem,
+                            action: { 
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
+                                    onSectionChange(.accounting)
+                                }
+                            }
+                        )
                     }
                     .padding(.top, 12)
                     .padding(.horizontal, 8)

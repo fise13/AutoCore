@@ -362,7 +362,7 @@ nonisolated final class DatabaseService {
         arrivalDate: Date?,
         soldDate: Date?,
         deletedAt: Date? = nil
-    ) throws {
+    ) throws -> Int64 {
         let createdAt = dateFormatter.string(from: Date())
         let updatedAt = createdAt
         let arrivalValue = arrivalDate ?? Date()
@@ -411,6 +411,12 @@ nonisolated final class DatabaseService {
                 .text(createdAt),
                 .text(updatedAt)
             ]
+        )
+        // Возвращаем ID созданного или обновлённого мотора
+        // Для обновления нужно получить ID по serial_code
+        return try singleValueInt64Unlocked(
+            sql: "SELECT id FROM motors WHERE serial_code = ?;",
+            bindings: [.text(serialCode)]
         )
     }
     
@@ -466,6 +472,47 @@ nonisolated final class DatabaseService {
                 ]
             )
         }
+    }
+    
+    func updateMotorUnlocked(
+        id: Int64,
+        configuration: String,
+        notes: String,
+        quantity: Int,
+        transmission: String,
+        arrivalDate: Date,
+        soldDate: Date?,
+        deletedAt: Date? = nil
+    ) throws {
+        let updatedAt = dateFormatter.string(from: Date())
+        let arrivalString = dateFormatter.string(from: arrivalDate)
+        let soldString = soldDate.map { dateFormatter.string(from: $0) }
+        let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
+        try executeUnlocked(
+            sql: """
+            UPDATE motors
+            SET configuration = ?,
+                notes = ?,
+                quantity = ?,
+                transmission = ?,
+                arrival_date = ?,
+                sold_date = ?,
+                deleted_at = ?,
+                updated_at = ?
+            WHERE id = ?;
+            """,
+            bindings: [
+                .text(configuration),
+                .text(notes),
+                .int64(Int64(max(quantity, 1))),
+                .text(transmission),
+                .text(arrivalString),
+                .textOptional(soldString),
+                .textOptional(deletedString),
+                .text(updatedAt),
+                .int64(id)
+            ]
+        )
     }
 
     func updateSoldDate(id: Int64, soldDate: Date?) throws {
@@ -1042,6 +1089,12 @@ nonisolated final class DatabaseService {
         
         return backupPath.path
     }
+    
+    /// Получить версию схемы БД
+    func getSchemaVersion() throws -> Int {
+        let version = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
+        return Int(version)
+    }
 
     private func migrate() throws {
         // Схема соответствует канонической модели.
@@ -1052,6 +1105,256 @@ nonisolated final class DatabaseService {
         """)
 
         let currentVersion = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
+        
+        // Миграция на версию 13: Fix account constraint to allow 'kaspi'
+        if currentVersion < 13 {
+            let tableExists = self.tableExists("financial_operations")
+            
+            if tableExists {
+                // Проверяем текущий constraint
+                let currentSQL = try? query(sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='financial_operations';") { statement in
+                    stringColumn(statement, index: 0)
+                }
+                
+                if let sql = currentSQL?.first, sql.contains("account IN ('cashbox', 'bank')") {
+                    // Пересоздаём таблицу с правильным constraint
+                    try execute(sql: """
+                        CREATE TABLE IF NOT EXISTS financial_operations_temp (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer')),
+                            amount TEXT NOT NULL,
+                            payment_method TEXT NOT NULL CHECK(payment_method IN ('cash', 'transfer', 'mixed')),
+                            cash_received TEXT,
+                            change_given TEXT,
+                            account TEXT NOT NULL CHECK(account IN ('cashbox', 'kaspi')),
+                            related_motor_id INTEGER,
+                            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            created_by_user TEXT NOT NULL,
+                            comment TEXT NOT NULL DEFAULT '',
+                            source TEXT NOT NULL DEFAULT '',
+                            details TEXT NOT NULL DEFAULT '',
+                            category TEXT,
+                            description TEXT NOT NULL DEFAULT '',
+                            FOREIGN KEY (related_motor_id) REFERENCES motors(id) ON DELETE SET NULL
+                        );
+                    """)
+                    
+                    // Копируем данные
+                    try execute(sql: """
+                        INSERT INTO financial_operations_temp 
+                        (id, type, amount, payment_method, cash_received, change_given, account, 
+                         related_motor_id, created_at, created_by_user, comment, source, details, category, description)
+                        SELECT id, type, amount, payment_method, cash_received, change_given, 
+                               CASE WHEN account = 'bank' THEN 'kaspi' ELSE account END,
+                               related_motor_id, created_at, created_by_user, comment, 
+                               COALESCE(source, ''), COALESCE(details, ''),
+                               category, COALESCE(description, '')
+                        FROM financial_operations;
+                    """)
+                    
+                    // Удаляем старую таблицу
+                    try execute(sql: "DROP TABLE financial_operations;")
+                    
+                    // Переименовываем новую таблицу
+                    try execute(sql: "ALTER TABLE financial_operations_temp RENAME TO financial_operations;")
+                    
+                    // Восстанавливаем индексы
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_type ON financial_operations(type);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_account ON financial_operations(account);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_created_at ON financial_operations(created_at);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_related_motor ON financial_operations(related_motor_id);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_category ON financial_operations(category);
+                    """)
+                }
+            }
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (13);")
+        }
+        
+        // Миграция на версию 12: Add category and description to financial_operations
+        if currentVersion < 12 {
+            // Проверяем, существует ли таблица financial_operations
+            let tableExists = self.tableExists("financial_operations")
+            
+            if tableExists {
+                // Добавляем поле category
+                do {
+                    try execute(sql: "ALTER TABLE financial_operations ADD COLUMN category TEXT;")
+                } catch {
+                    // Поле уже существует, игнорируем
+                }
+                
+                // Добавляем поле description
+                do {
+                    try execute(sql: "ALTER TABLE financial_operations ADD COLUMN description TEXT NOT NULL DEFAULT '';")
+                } catch {
+                    // Поле уже существует, игнорируем
+                }
+                
+                // Обновляем существующие записи: description = details, если description пустой
+                do {
+                    try execute(sql: "UPDATE financial_operations SET description = details WHERE description = '' OR description IS NULL;")
+                } catch {
+                    // Игнорируем ошибки
+                }
+                
+                // Создаём индекс для категории
+                do {
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_category ON financial_operations(category);")
+                } catch {
+                    // Индекс уже существует, игнорируем
+                }
+            }
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (12);")
+        }
+        
+        // Миграция на версию 11: Change bank to kaspi and add history fields
+        if currentVersion < 11 {
+            // Проверяем, существует ли таблица financial_operations
+            let tableExists = self.tableExists("financial_operations")
+            
+            if tableExists {
+                // Проверяем, нужно ли обновлять constraint (если в таблице еще используется 'bank')
+                let hasBankConstraint = try? query(sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='financial_operations';") { statement in
+                    let sql = stringColumn(statement, index: 0)
+                    return sql.contains("account IN ('cashbox', 'bank')")
+                }
+                
+                if hasBankConstraint?.first == true {
+                    // Пересоздаём таблицу с новым CHECK constraint
+                    // SQLite не поддерживает ALTER TABLE для изменения CHECK, поэтому нужно пересоздать
+                    try execute(sql: """
+                        CREATE TABLE IF NOT EXISTS financial_operations_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer')),
+                            amount TEXT NOT NULL,
+                            payment_method TEXT NOT NULL CHECK(payment_method IN ('cash', 'transfer', 'mixed')),
+                            cash_received TEXT,
+                            change_given TEXT,
+                            account TEXT NOT NULL CHECK(account IN ('cashbox', 'kaspi')),
+                            related_motor_id INTEGER,
+                            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            created_by_user TEXT NOT NULL,
+                            comment TEXT NOT NULL DEFAULT '',
+                            source TEXT NOT NULL DEFAULT '',
+                            details TEXT NOT NULL DEFAULT '',
+                            FOREIGN KEY (related_motor_id) REFERENCES motors(id) ON DELETE SET NULL
+                        );
+                    """)
+                    
+                    // Копируем данные
+                    try execute(sql: """
+                        INSERT INTO financial_operations_new 
+                        (id, type, amount, payment_method, cash_received, change_given, account, 
+                         related_motor_id, created_at, created_by_user, comment, source, details)
+                        SELECT id, type, amount, payment_method, cash_received, change_given, 
+                               CASE WHEN account = 'bank' THEN 'kaspi' ELSE account END,
+                               related_motor_id, created_at, created_by_user, comment, 
+                               COALESCE(source, ''), COALESCE(details, '')
+                        FROM financial_operations;
+                    """)
+                    
+                    // Удаляем старую таблицу
+                    try execute(sql: "DROP TABLE financial_operations;")
+                    
+                    // Переименовываем новую таблицу
+                    try execute(sql: "ALTER TABLE financial_operations_new RENAME TO financial_operations;")
+                    
+                    // Восстанавливаем индексы
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_type ON financial_operations(type);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_account ON financial_operations(account);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_created_at ON financial_operations(created_at);
+                    """)
+                    
+                    try execute(sql: """
+                        CREATE INDEX IF NOT EXISTS idx_financial_operations_related_motor ON financial_operations(related_motor_id);
+                    """)
+                } else {
+                    // Просто добавляем новые поля, если constraint уже правильный
+                    do {
+                        try execute(sql: "ALTER TABLE financial_operations ADD COLUMN source TEXT DEFAULT '';")
+                    } catch {
+                        // Поле уже существует, игнорируем
+                    }
+                    
+                    do {
+                        try execute(sql: "ALTER TABLE financial_operations ADD COLUMN details TEXT DEFAULT '';")
+                    } catch {
+                        // Поле уже существует, игнорируем
+                    }
+                    
+                    // Обновляем существующие записи: bank -> kaspi
+                    try execute(sql: "UPDATE financial_operations SET account = 'kaspi' WHERE account = 'bank';")
+                }
+            }
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (11);")
+        }
+        
+        // Миграция на версию 10: Financial Operations
+        if currentVersion < 10 {
+            try execute(sql: """
+                CREATE TABLE IF NOT EXISTS financial_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer')),
+                    amount TEXT NOT NULL,
+                    payment_method TEXT NOT NULL CHECK(payment_method IN ('cash', 'transfer', 'mixed')),
+                    cash_received TEXT,
+                    change_given TEXT,
+                    account TEXT NOT NULL CHECK(account IN ('cashbox', 'kaspi')),
+                    related_motor_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    created_by_user TEXT NOT NULL,
+                    comment TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    details TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY (related_motor_id) REFERENCES motors(id) ON DELETE SET NULL
+                );
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_financial_operations_type ON financial_operations(type);
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_financial_operations_account ON financial_operations(account);
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_financial_operations_created_at ON financial_operations(created_at);
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_financial_operations_related_motor ON financial_operations(related_motor_id);
+            """)
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (10);")
+        }
         
         // Миграция на версию 9: Settings
         if currentVersion < 9 {
@@ -1453,13 +1756,28 @@ nonisolated final class DatabaseService {
             return results
         }
     }
+    
+    private func queryUnlocked<T>(sql: String, bindings: [SQLiteBinding] = [], map: (OpaquePointer) -> T) throws -> [T] {
+        // Версия query без queue.sync для использования внутри транзакции
+        let statement = try prepare(sql: sql)
+        defer { sqlite3_finalize(statement) }
+        try bind(bindings, to: statement)
+        var results: [T] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            results.append(map(statement))
+        }
+        return results
+    }
 
     private func executeUnlocked(sql: String, bindings: [SQLiteBinding] = []) throws {
         let statement = try prepare(sql: sql)
         defer { sqlite3_finalize(statement) }
         try bind(bindings, to: statement)
-        if sqlite3_step(statement) != SQLITE_DONE {
-            throw DatabaseError.executionFailed(message: errorMessage)
+        let stepResult = sqlite3_step(statement)
+        if stepResult != SQLITE_DONE {
+            let errorMsg = errorMessage
+            let extendedError = sqlite3_extended_errcode(db)
+            throw DatabaseError.executionFailed(message: "\(errorMsg) (SQLite error code: \(stepResult), extended: \(extendedError))")
         }
     }
 
@@ -1565,6 +1883,343 @@ nonisolated final class DatabaseService {
             )
         }
     }
+    
+    // MARK: - Financial Operations Methods
+    
+    /// Вставить финансовую операцию
+    func insertFinancialOperation(
+        type: String,
+        amount: Decimal,
+        paymentMethod: String,
+        cashReceived: Decimal?,
+        changeGiven: Decimal?,
+        account: String,
+        relatedMotorID: Int64?,
+        createdAt: Date,
+        createdByUser: String,
+        comment: String,
+        source: String = "",
+        details: String = "",
+        category: String? = nil,
+        description: String = ""
+    ) throws -> Int64 {
+        try assertNotReadOnly()
+        let createdAtStr = dateFormatter.string(from: createdAt)
+        return try queue.sync {
+            try executeUnlocked(
+                sql: """
+                INSERT INTO financial_operations (
+                    type, amount, payment_method, cash_received, change_given,
+                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(type),
+                    .text(String(describing: amount)),
+                    .text(paymentMethod),
+                    cashReceived.map { .text(String(describing: $0)) } ?? .textOptional(nil),
+                    changeGiven.map { .text(String(describing: $0)) } ?? .textOptional(nil),
+                    .text(account),
+                    relatedMotorID.map { .int64($0) } ?? .intOptional(nil),
+                    .text(createdAtStr),
+                    .text(createdByUser),
+                    .text(comment),
+                    .text(source),
+                    .text(details),
+                    category.map { .text($0) } ?? .textOptional(nil),
+                    .text(description.isEmpty ? (details.isEmpty ? "" : details) : description)
+                ]
+            )
+            return sqlite3_last_insert_rowid(db)
+        }
+    }
+    
+    /// Вставить финансовую операцию (unlocked, для использования внутри транзакций)
+    func insertFinancialOperationUnlocked(
+        type: String,
+        amount: Decimal,
+        paymentMethod: String,
+        cashReceived: Decimal?,
+        changeGiven: Decimal?,
+        account: String,
+        relatedMotorID: Int64?,
+        createdAt: Date,
+        createdByUser: String,
+        comment: String,
+        source: String = "",
+        details: String = "",
+        category: String? = nil,
+        description: String = ""
+    ) throws -> Int64 {
+        let createdAtStr = dateFormatter.string(from: createdAt)
+        try executeUnlocked(
+            sql: """
+            INSERT INTO financial_operations (
+                type, amount, payment_method, cash_received, change_given,
+                account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            bindings: [
+                .text(type),
+                .text(String(describing: amount)),
+                .text(paymentMethod),
+                cashReceived.map { .text(String(describing: $0)) } ?? .textOptional(nil),
+                changeGiven.map { .text(String(describing: $0)) } ?? .textOptional(nil),
+                .text(account),
+                relatedMotorID.map { .int64($0) } ?? .intOptional(nil),
+                .text(createdAtStr),
+                .text(createdByUser),
+                .text(comment),
+                .text(source),
+                .text(details),
+                category.map { .text($0) } ?? .textOptional(nil),
+                .text(description.isEmpty ? (details.isEmpty ? "" : details) : description)
+            ]
+        )
+        return sqlite3_last_insert_rowid(db)
+    }
+    
+    /// Получить финансовую операцию по ID
+    func fetchFinancialOperation(id: Int64) throws -> FinancialOperation? {
+        return try query(
+            sql: """
+            SELECT id, type, amount, payment_method, cash_received, change_given,
+                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+            FROM financial_operations
+            WHERE id = ?;
+            """,
+            bindings: [.int64(id)]
+        ) { statement in
+            FinancialOperation(
+                id: sqlite3_column_int64(statement, 0),
+                type: stringColumn(statement, index: 1),
+                amount: parseDecimal(stringColumn(statement, index: 2)) ?? 0,
+                paymentMethod: stringColumn(statement, index: 3),
+                cashReceived: optionalStringColumn(statement, index: 4).flatMap { parseDecimal($0) },
+                changeGiven: optionalStringColumn(statement, index: 5).flatMap { parseDecimal($0) },
+                account: stringColumn(statement, index: 6),
+                relatedMotorID: intColumn(statement, index: 7).map { Int64($0) },
+                createdAt: dateFromString(stringColumn(statement, index: 8)) ?? Date(),
+                createdByUser: stringColumn(statement, index: 9),
+                comment: stringColumn(statement, index: 10),
+                source: optionalStringColumn(statement, index: 11) ?? "",
+                details: optionalStringColumn(statement, index: 12) ?? "",
+                category: optionalStringColumn(statement, index: 13),
+                description: optionalStringColumn(statement, index: 14) ?? ""
+            )
+        }.first
+    }
+    
+    func fetchFinancialOperationUnlocked(id: Int64) throws -> FinancialOperation? {
+        return try queryUnlocked(
+            sql: """
+            SELECT id, type, amount, payment_method, cash_received, change_given,
+                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+            FROM financial_operations
+            WHERE id = ?;
+            """,
+            bindings: [.int64(id)]
+        ) { statement in
+            FinancialOperation(
+                id: sqlite3_column_int64(statement, 0),
+                type: stringColumn(statement, index: 1),
+                amount: parseDecimal(stringColumn(statement, index: 2)) ?? 0,
+                paymentMethod: stringColumn(statement, index: 3),
+                cashReceived: optionalStringColumn(statement, index: 4).flatMap { parseDecimal($0) },
+                changeGiven: optionalStringColumn(statement, index: 5).flatMap { parseDecimal($0) },
+                account: stringColumn(statement, index: 6),
+                relatedMotorID: intColumn(statement, index: 7).map { Int64($0) },
+                createdAt: dateFromString(stringColumn(statement, index: 8)) ?? Date(),
+                createdByUser: stringColumn(statement, index: 9),
+                comment: stringColumn(statement, index: 10),
+                source: optionalStringColumn(statement, index: 11) ?? "",
+                details: optionalStringColumn(statement, index: 12) ?? "",
+                category: optionalStringColumn(statement, index: 13),
+                description: optionalStringColumn(statement, index: 14) ?? ""
+            )
+        }.first
+    }
+    
+    /// Получить мотор по ID без queue.sync (для использования внутри транзакции)
+    func fetchMotorByIDUnlocked(id: Int64) throws -> Motor? {
+        return try queryUnlocked(
+            sql: """
+            SELECT motors.id,
+                   motors.engine_id,
+                   motors.serial_code,
+                   motors.configuration,
+                   motors.notes,
+                   motors.quantity,
+                   motors.transmission,
+                   motors.arrival_date,
+                   motors.sold_date,
+                   motors.deleted_at,
+                   motors.created_at,
+                   motors.updated_at,
+                   brands.name,
+                   engines.engine_code
+            FROM motors
+            JOIN engines ON engines.id = motors.engine_id
+            JOIN brands ON brands.id = engines.brand_id
+            WHERE motors.id = ?;
+            """,
+            bindings: [.int64(id)]
+        ) { statement in
+            let arrivalDate = dateFormatter.date(from: stringColumn(statement, index: 7)) ?? Date()
+            let soldDateString = optionalStringColumn(statement, index: 8)
+            let soldDate = soldDateString.flatMap { dateFormatter.date(from: $0) }
+            let deletedAtString = optionalStringColumn(statement, index: 9)
+            let deletedAt = deletedAtString.flatMap { dateFormatter.date(from: $0) }
+            let createdAt = dateFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
+            let updatedAt = dateFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
+            return Motor(
+                id: sqlite3_column_int64(statement, 0),
+                engineID: sqlite3_column_int64(statement, 1),
+                serialCode: stringColumn(statement, index: 2),
+                configuration: stringColumn(statement, index: 3),
+                notes: stringColumn(statement, index: 4),
+                quantity: Int(sqlite3_column_int64(statement, 5)),
+                transmission: stringColumn(statement, index: 6),
+                arrivalDate: arrivalDate,
+                soldDate: soldDate,
+                deletedAt: deletedAt,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                brandName: stringColumn(statement, index: 12),
+                engineCode: stringColumn(statement, index: 13)
+            )
+        }.first
+    }
+    
+    /// Получить финансовые операции с фильтрами
+    func fetchFinancialOperations(filter: FinancialOperationFilter) throws -> [FinancialOperation] {
+        var sql = """
+        SELECT id, type, amount, payment_method, cash_received, change_given,
+               account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+        FROM financial_operations
+        WHERE 1 = 1
+        """
+        var bindings: [SQLiteBinding] = []
+        
+        if let type = filter.type {
+            sql += " AND type = ?"
+            bindings.append(.text(type.rawValue))
+        }
+        
+        if let account = filter.account {
+            sql += " AND account = ?"
+            bindings.append(.text(account.rawValue))
+        }
+        
+        if let relatedMotorID = filter.relatedMotorID {
+            sql += " AND related_motor_id = ?"
+            bindings.append(.int64(relatedMotorID))
+        }
+        
+        if let fromDate = filter.fromDate {
+            sql += " AND created_at >= ?"
+            bindings.append(.text(dateFormatter.string(from: fromDate)))
+        }
+        
+        if let toDate = filter.toDate {
+            sql += " AND created_at <= ?"
+            bindings.append(.text(dateFormatter.string(from: toDate)))
+        }
+        
+        sql += " ORDER BY created_at DESC"
+        
+        if let limit = filter.limit {
+            sql += " LIMIT ?"
+            bindings.append(.int64(Int64(limit)))
+            
+            if let offset = filter.offset {
+                sql += " OFFSET ?"
+                bindings.append(.int64(Int64(offset)))
+            }
+        }
+        
+        sql += ";"
+        
+        return try query(sql: sql, bindings: bindings) { statement in
+            FinancialOperation(
+                id: sqlite3_column_int64(statement, 0),
+                type: stringColumn(statement, index: 1),
+                amount: parseDecimal(stringColumn(statement, index: 2)) ?? 0,
+                paymentMethod: stringColumn(statement, index: 3),
+                cashReceived: optionalStringColumn(statement, index: 4).flatMap { parseDecimal($0) },
+                changeGiven: optionalStringColumn(statement, index: 5).flatMap { parseDecimal($0) },
+                account: stringColumn(statement, index: 6),
+                relatedMotorID: intColumn(statement, index: 7).map { Int64($0) },
+                createdAt: dateFromString(stringColumn(statement, index: 8)) ?? Date(),
+                createdByUser: stringColumn(statement, index: 9),
+                comment: stringColumn(statement, index: 10),
+                source: optionalStringColumn(statement, index: 11) ?? "",
+                details: optionalStringColumn(statement, index: 12) ?? "",
+                category: optionalStringColumn(statement, index: 13),
+                description: optionalStringColumn(statement, index: 14) ?? ""
+            )
+        }
+    }
+    
+    /// Вычислить баланс кассы/Каспи
+    func calculateCashBalance(account: String, upToDate: Date? = nil) throws -> Decimal {
+        var sql = """
+        SELECT 
+            COALESCE(SUM(
+                CASE 
+                    WHEN type = 'sale' AND account = ? THEN amount
+                    WHEN type = 'refund' AND account = ? THEN -amount
+                    WHEN type = 'expense' AND account = ? THEN -amount
+                    WHEN type = 'transfer' AND account = ? THEN -amount
+                    ELSE 0
+                END
+            ), 0)
+        FROM financial_operations
+        WHERE account = ?
+        """
+        var bindings: [SQLiteBinding] = [.text(account), .text(account), .text(account), .text(account), .text(account)]
+        
+        if let upToDate = upToDate {
+            sql += " AND created_at <= ?"
+            bindings.append(.text(dateFormatter.string(from: upToDate)))
+        }
+        
+        sql += ";"
+        
+        let result = try query(sql: sql, bindings: bindings) { statement in
+            optionalStringColumn(statement, index: 0).flatMap { parseDecimal($0) } ?? 0
+        }
+        
+        return result.first ?? 0
+    }
+    
+    struct FinancialOperationFilter {
+        var type: FinancialOperationEntity.OperationType? = nil
+        var account: FinancialOperationEntity.Account? = nil
+        var relatedMotorID: Int64? = nil
+        var fromDate: Date? = nil
+        var toDate: Date? = nil
+        var limit: Int? = nil
+        var offset: Int? = nil
+    }
+    
+    struct FinancialOperation {
+        let id: Int64
+        let type: String
+        let amount: Decimal
+        let paymentMethod: String
+        let cashReceived: Decimal?
+        let changeGiven: Decimal?
+        let account: String
+        let relatedMotorID: Int64?
+        let createdAt: Date
+        let createdByUser: String
+        let comment: String
+        let source: String
+        let details: String
+        let category: String?
+        let description: String
+    }
 }
 
 private enum SQLiteBinding {
@@ -1605,4 +2260,11 @@ private func intColumn(_ statement: OpaquePointer, index: Int32) -> Int? {
         return nil
     }
     return Int(sqlite3_column_int64(statement, index))
+}
+
+private func parseDecimal(_ string: String) -> Decimal? {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    return formatter.number(from: string)?.decimalValue
 }

@@ -9,6 +9,7 @@ enum NavigationSection: Identifiable, Hashable {
     case all
     case sold
     case specificCategory(categoryID: Int64)
+    case accounting
     
     var id: String {
         switch self {
@@ -18,6 +19,8 @@ enum NavigationSection: Identifiable, Hashable {
             return "sold"
         case .specificCategory(let categoryID):
             return "category_\(categoryID)"
+        case .accounting:
+            return "accounting"
         }
     }
     
@@ -29,6 +32,8 @@ enum NavigationSection: Identifiable, Hashable {
             return "Проданные"
         case .specificCategory:
             return "" // Будет заполнено из категории
+        case .accounting:
+            return "Бухгалтерия"
         }
     }
     
@@ -50,6 +55,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var allMotors: [Motor] = []
     // Отдельный массив для экрана "Проданные" (с отдельным поиском)
     @Published private(set) var soldMotors: [Motor] = []
+    @Published private(set) var soldMotorPrices: [Int64: Decimal] = [:]  // Цены продажи по ID мотора
     @Published private(set) var serviceRecords: [ServiceRecord] = []
     @Published private(set) var specificRecords: [DatabaseService.SpecificRecord] = [] // Записи из specific_records для выбранной категории
     @Published private(set) var allSpecificRecords: [DatabaseService.SpecificRecord] = [] // ВСЕ специфичные записи для "Все моторы" и "Проданные" (deprecated - lazy loading)
@@ -69,6 +75,12 @@ final class AppViewModel: ObservableObject {
     @Published var soldSearchText = ""
     @Published var serviceRecordsSearchText = ""
     @Published var availabilityFilter: MotorAvailabilityFilter = .all
+    
+    // Financial operations
+    @Published var isShowingSellMotorSheet = false
+    @Published var motorToSell: Motor?
+    @Published var isShowingRefundMotorSheet = false
+    @Published var motorToRefund: Motor?
     
     // Вычисляемое свойство для фильтрации моторов
     // Фильтрация по availability применяется ПЕРВОЙ, затем поиск
@@ -184,6 +196,23 @@ final class AppViewModel: ObservableObject {
     private let pageSize = 500
     private var currentPage = 0
     private var currentSoldPage = 0
+    
+    // MARK: - Date Formatter (общий для производительности)
+    private static let displayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter
+    }()
+    
+    // MARK: - MotorRowDTO Conversion
+    
+    /// Преобразует массив Motor в MotorRowDTO с предварительным форматированием
+    func convertToDTOs(motors: [Motor]) -> [MotorRowDTO] {
+        motors.map { motor in
+            MotorRowDTO.from(motor: motor, dateFormatter: Self.displayDateFormatter)
+        }
+    }
 
     let database: DatabaseService
     let undoManager = UndoManager()
@@ -240,6 +269,32 @@ final class AppViewModel: ObservableObject {
                 let totalSoldCount = try database.countMotors(filter: soldFilter)
                 let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 
+                // Загружаем цены продажи из финансовых операций
+                let motorIDs = soldMotors.map { $0.id }
+                var prices: [Int64: Decimal] = [:]
+                
+                if !motorIDs.isEmpty {
+                    let financialFilter = DatabaseService.FinancialOperationFilter(
+                        type: .sale,
+                        account: nil,
+                        relatedMotorID: nil,
+                        fromDate: nil,
+                        toDate: nil,
+                        limit: nil,
+                        offset: nil
+                    )
+                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                    
+                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
+                    for motorID in motorIDs {
+                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
+                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
+                        if let saleOperation = sortedOperations.first {
+                            prices[motorID] = saleOperation.amount
+                        }
+                    }
+                }
+                
                 // Загружаем категории для получения имён
                 let categories = try database.fetchAllSpecificCategories()
                 
@@ -259,6 +314,7 @@ final class AppViewModel: ObservableObject {
                         allSpecificRecords: allSpecificRecords,
                         categories: categories
                     )
+                    self.soldMotorPrices = prices
                     self.setHasMorePages(false) // Все загружены в память
                     self.setHasMoreSoldPages(soldMotors.count >= self.pageSize)
                 }
@@ -287,10 +343,36 @@ final class AppViewModel: ObservableObject {
                 let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 let totalCount = try database.countMotors(filter: soldFilter)
                 
+                // Загружаем цены продажи из финансовых операций
+                let motorIDs = soldMotors.map { $0.id }
+                var prices: [Int64: Decimal] = [:]
+                
+                if !motorIDs.isEmpty {
+                    let financialFilter = DatabaseService.FinancialOperationFilter(
+                        type: .sale,
+                        account: nil,
+                        relatedMotorID: nil,
+                        fromDate: nil,
+                        toDate: nil,
+                        limit: nil,
+                        offset: nil
+                    )
+                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                    
+                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
+                    for motorID in motorIDs {
+                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
+                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
+                        if let saleOperation = sortedOperations.first {
+                            prices[motorID] = saleOperation.amount
+                        }
+                    }
+                }
+                
                 // Специфичные записи НЕ добавляются в "Проданные" - только в поиск
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.updateSoldMotors(soldMotors, totalCount: totalCount)
+                    self.updateSoldMotors(soldMotors, totalCount: totalCount, prices: prices)
                     self.setHasMoreSoldPages(soldMotors.count >= self.pageSize)
                 }
             } catch {
@@ -315,9 +397,36 @@ final class AppViewModel: ObservableObject {
                 let filter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
                 let offset = page * pageSize
                 let newMotors = try database.fetchMotors(filter: filter, limit: pageSize, offset: offset)
+                
+                // Загружаем цены продажи для новых моторов
+                let motorIDs = newMotors.map { $0.id }
+                var prices: [Int64: Decimal] = [:]
+                
+                if !motorIDs.isEmpty {
+                    let financialFilter = DatabaseService.FinancialOperationFilter(
+                        type: .sale,
+                        account: nil,
+                        relatedMotorID: nil,
+                        fromDate: nil,
+                        toDate: nil,
+                        limit: nil,
+                        offset: nil
+                    )
+                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                    
+                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
+                    for motorID in motorIDs {
+                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
+                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
+                        if let saleOperation = sortedOperations.first {
+                            prices[motorID] = saleOperation.amount
+                        }
+                    }
+                }
+                
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.appendSoldMotors(newMotors)
+                    self.appendSoldMotors(newMotors, prices: prices)
                     self.setHasMoreSoldPages(newMotors.count >= self.pageSize)
                 }
             } catch {
@@ -648,42 +757,112 @@ final class AppViewModel: ObservableObject {
     }
     
     func toggleSold(for motor: Motor) {
-        let shouldSell = motor.soldDate == nil
-        setSoldStatus(motorID: motor.id, sell: shouldSell)
+        // Открываем модальное окно для продажи с финансовыми данными
+        motorToSell = motor
+        isShowingSellMotorSheet = true
+    }
+    
+    func sellMotorWithFinancialOperation(
+        motorID: Int64,
+        saleAmount: Decimal,
+        paymentMethod: FinancialOperationEntity.PaymentMethod,
+        cashReceived: Decimal?,
+        account: FinancialOperationEntity.Account,
+        comment: String,
+        currentUser: String
+    ) {
+        let database = self.database
+        let motorRepository = self.motorRepository
+        let recoveryState = self.recoveryState
+        
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let useCase = SellMotorWithFinancialOperationUseCase(
+                    database: database,
+                    motorRepository: motorRepository,
+                    recoveryState: recoveryState,
+                    currentUser: currentUser
+                )
+                
+                let result = try await useCase.execute(
+                    motorID: motorID,
+                    soldDate: Date(),
+                    saleAmount: saleAmount,
+                    paymentMethod: paymentMethod,
+                    cashReceived: cashReceived,
+                    account: account,
+                    comment: comment
+                )
+                
+                // Обновляем цену продажи для этого мотора
+                self.soldMotorPrices[motorID] = saleAmount
+                
+                self.isShowingSellMotorSheet = false
+                self.motorToSell = nil
+                self.switchToSoldFilter()
+                self.refreshAll()
+            } catch {
+                self.setError("Ошибка продажи: \(error.localizedDescription)")
+                self.isShowingSellMotorSheet = false
+            }
+        }
     }
 
     func setSoldStatus(motorID: Int64, sell: Bool) {
+        if sell {
+            // Продажа - открываем модальное окно с финансовыми данными
+            if let motor = allMotors.first(where: { $0.id == motorID }) {
+                motorToSell = motor
+                isShowingSellMotorSheet = true
+            }
+        } else {
+            // Возврат - открываем модальное окно возврата с финансовыми данными
+            if let motor = allMotors.first(where: { $0.id == motorID }) {
+                motorToRefund = motor
+                isShowingRefundMotorSheet = true
+            }
+        }
+    }
+    
+    func refundMotorWithFinancialOperation(
+        motorID: Int64,
+        refundAmount: Decimal,
+        paymentMethod: FinancialOperationEntity.PaymentMethod,
+        cashReceived: Decimal?,
+        account: FinancialOperationEntity.Account,
+        comment: String,
+        currentUser: String
+    ) {
         let database = self.database
-        Task.detached(priority: .userInitiated) { [weak self] in
+        let motorRepository = self.motorRepository
+        let recoveryState = self.recoveryState
+        
+        Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let motor = try await self.getMotor(id: motorID)
-                let oldSoldDate = motor?.soldDate
-                let newSoldDate = sell ? Date() : nil
-                
-                try database.updateSoldDate(
-                    id: motorID,
-                    soldDate: newSoldDate
+                let useCase = UnsellMotorWithFinancialOperationUseCase(
+                    database: database,
+                    motorRepository: motorRepository,
+                    recoveryState: recoveryState,
+                    currentUser: currentUser
                 )
                 
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.registerUndo(
-                        actionName: sell ? "Продать мотор" : "Вернуть мотор в наличие",
-                        motorID: motorID,
-                        oldSoldDate: oldSoldDate,
-                        newSoldDate: newSoldDate
-                    )
-                    
-                    if sell {
-                        self.switchToSoldFilter()
-                    }
-                    self.refreshAll()
-                }
+                let result = try await useCase.execute(
+                    motorID: motorID,
+                    refundAmount: refundAmount,
+                    paymentMethod: paymentMethod,
+                    cashReceived: cashReceived,
+                    account: account,
+                    comment: comment
+                )
+                
+                self.isShowingRefundMotorSheet = false
+                self.motorToRefund = nil
+                self.refreshAll()
             } catch {
-                await MainActor.run { [weak self] in
-                    self?.setError("Ошибка обновления продажи: \(error.localizedDescription)")
-                }
+                self.setError("Ошибка возврата: \(error.localizedDescription)")
+                self.isShowingRefundMotorSheet = false
             }
         }
     }
@@ -1013,15 +1192,17 @@ final class AppViewModel: ObservableObject {
     }
     
     @MainActor
-    private func updateSoldMotors(_ motors: [Motor], totalCount: Int = 0) {
+    private func updateSoldMotors(_ motors: [Motor], totalCount: Int = 0, prices: [Int64: Decimal] = [:]) {
         self.soldMotors = motors
         self.totalSoldCount = totalCount
+        self.soldMotorPrices = prices
         self.isLoading = false
     }
     
     @MainActor
-    private func appendSoldMotors(_ newMotors: [Motor]) {
+    private func appendSoldMotors(_ newMotors: [Motor], prices: [Int64: Decimal] = [:]) {
         self.soldMotors.append(contentsOf: newMotors)
+        self.soldMotorPrices.merge(prices) { (_, new) in new }
         self.isLoading = false
     }
     
