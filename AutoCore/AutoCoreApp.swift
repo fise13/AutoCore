@@ -17,14 +17,7 @@ struct AutoCoreApp: App {
     @StateObject private var appState: AppState
     
     init() {
-        // КРИТИЧНО: Инициализируем Firebase СИНХРОННО до создания AppState
-        // Это должно быть сделано ПЕРЕД любым использованием FirebaseAuth
-        if FirebaseApp.app() == nil {
-            FirebaseApp.configure()
-            print("🔥 Firebase configured in AutoCoreApp.init()")
-        }
-        
-        // Теперь безопасно создаем AppState (который создаст FirebaseAuthAdapter)
+        // Создаем AppState (который создаст SupabaseAuthService)
         _appState = StateObject(wrappedValue: AppState())
         
         // Запускаем сервис обновлений при старте приложения

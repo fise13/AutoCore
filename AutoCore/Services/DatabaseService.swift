@@ -1095,6 +1095,142 @@ nonisolated final class DatabaseService {
         let version = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
         return Int(version)
     }
+    
+    // MARK: - Outbox Operations Methods
+    
+    /// Добавить операцию в outbox для синхронизации
+    func insertOutboxOperation(
+        id: String,
+        payloadJSON: String,
+        operationType: String
+    ) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: """
+                INSERT INTO outbox_operations (id, payload_json, operation_type, status, retry_count)
+                VALUES (?, ?, ?, 'pending', 0);
+                """,
+                bindings: [
+                    .text(id),
+                    .text(payloadJSON),
+                    .text(operationType)
+                ]
+            )
+        }
+    }
+    
+    /// Добавить операцию в outbox (unlocked версия для использования внутри транзакции)
+    func insertOutboxOperationUnlocked(
+        id: String,
+        payloadJSON: String,
+        operationType: String
+    ) throws {
+        try executeUnlocked(
+            sql: """
+            INSERT INTO outbox_operations (id, payload_json, operation_type, status, retry_count)
+            VALUES (?, ?, ?, 'pending', 0);
+            """,
+            bindings: [
+                .text(id),
+                .text(payloadJSON),
+                .text(operationType)
+            ]
+        )
+    }
+    
+    /// Получить все pending операции из outbox
+    func fetchPendingOutboxOperations() throws -> [OutboxOperation] {
+        return try queue.sync {
+            try queryUnlocked(
+                sql: """
+                SELECT id, payload_json, operation_type, created_at, status, retry_count, last_error, synced_at
+                FROM outbox_operations
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 100;
+                """
+            ) { statement in
+                let id = stringColumn(statement, index: 0)
+                let payloadJSON = stringColumn(statement, index: 1)
+                let operationType = stringColumn(statement, index: 2)
+                let createdAtString = stringColumn(statement, index: 3)
+                let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+                let status = stringColumn(statement, index: 4)
+                let retryCount = Int(sqlite3_column_int64(statement, 5))
+                let lastError = optionalStringColumn(statement, index: 6)
+                let syncedAtString = optionalStringColumn(statement, index: 7)
+                let syncedAt = syncedAtString.flatMap { dateFormatter.date(from: $0) }
+                
+                return OutboxOperation(
+                    id: id,
+                    payloadJSON: payloadJSON,
+                    operationType: operationType,
+                    createdAt: createdAt,
+                    status: status,
+                    retryCount: retryCount,
+                    lastError: lastError,
+                    syncedAt: syncedAt
+                )
+            }
+        }
+    }
+    
+    /// Пометить операцию как отправленную
+    func markOutboxOperationAsSent(operationID: String) throws {
+        try assertNotReadOnly()
+        let syncedAt = dateFormatter.string(from: Date())
+        try queue.sync {
+            try executeUnlocked(
+                sql: """
+                UPDATE outbox_operations
+                SET status = 'sent', synced_at = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(syncedAt),
+                    .text(operationID)
+                ]
+            )
+        }
+    }
+    
+    /// Пометить операцию как failed
+    func markOutboxOperationAsFailed(operationID: String, error: String) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: """
+                UPDATE outbox_operations
+                SET status = 'failed', last_error = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(error),
+                    .text(operationID)
+                ]
+            )
+        }
+    }
+    
+    /// Обновить retry count для операции
+    func updateOutboxOperationRetryCount(operationID: String, retryCount: Int, error: String) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: """
+                UPDATE outbox_operations
+                SET retry_count = ?, last_error = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .int64(Int64(retryCount)),
+                    .text(error),
+                    .text(operationID)
+                ]
+            )
+        }
+    }
 
     private func migrate() throws {
         // Схема соответствует канонической модели.
@@ -1183,6 +1319,35 @@ nonisolated final class DatabaseService {
             
             try execute(sql: "DELETE FROM schema_version;")
             try execute(sql: "INSERT INTO schema_version (version) VALUES (13);")
+        }
+        
+        // Миграция на версию 14: Add outbox_operations table for Supabase sync
+        if currentVersion < 14 {
+            try execute(sql: """
+                CREATE TABLE IF NOT EXISTS outbox_operations (
+                    id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    operation_type TEXT NOT NULL CHECK(operation_type IN ('sale', 'expense', 'refund', 'transfer')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed')),
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    synced_at TEXT
+                );
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_outbox_operations_status 
+                ON outbox_operations(status);
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_outbox_operations_created_at 
+                ON outbox_operations(created_at);
+            """)
+            
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (14);")
         }
         
         // Миграция на версию 12: Add category and description to financial_operations
@@ -2219,6 +2384,19 @@ nonisolated final class DatabaseService {
         let details: String
         let category: String?
         let description: String
+    }
+    
+    // MARK: - OutboxOperation Model
+    
+    struct OutboxOperation {
+        let id: String
+        let payloadJSON: String
+        let operationType: String
+        let createdAt: Date
+        let status: String
+        let retryCount: Int
+        let lastError: String?
+        let syncedAt: Date?
     }
 }
 

@@ -231,11 +231,15 @@ final class AppViewModel: ObservableObject {
 
     @Published private(set) var recoveryState: RecoveryState?
     private let motorRepository: MotorRepository
+    private let supabaseSyncService: SupabaseSyncService?
+    let enqueueForSyncUseCase: EnqueueOperationForSyncUseCase?
     
-    init(database: DatabaseService, recoveryState: RecoveryState? = nil) {
+    init(database: DatabaseService, recoveryState: RecoveryState? = nil, supabaseSyncService: SupabaseSyncService? = nil) {
         self.database = database
         self.recoveryState = recoveryState
         self.motorRepository = MotorRepositoryImpl(database: database)
+        self.supabaseSyncService = supabaseSyncService
+        self.enqueueForSyncUseCase = EnqueueOperationForSyncUseCase(database: database)
         undoManager.groupsByEvent = true
         observeFilters()
         refreshAll()
@@ -761,7 +765,7 @@ final class AppViewModel: ObservableObject {
         motorToSell = motor
         isShowingSellMotorSheet = true
     }
-    
+
     func sellMotorWithFinancialOperation(
         motorID: Int64,
         saleAmount: Decimal,
@@ -782,11 +786,12 @@ final class AppViewModel: ObservableObject {
                     database: database,
                     motorRepository: motorRepository,
                     recoveryState: recoveryState,
-                    currentUser: currentUser
+                    currentUser: currentUser,
+                    enqueueForSyncUseCase: self.enqueueForSyncUseCase
                 )
                 
                 let result = try await useCase.execute(
-                    motorID: motorID,
+                        motorID: motorID,
                     soldDate: Date(),
                     saleAmount: saleAmount,
                     paymentMethod: paymentMethod,
@@ -800,8 +805,8 @@ final class AppViewModel: ObservableObject {
                 
                 self.isShowingSellMotorSheet = false
                 self.motorToSell = nil
-                self.switchToSoldFilter()
-                self.refreshAll()
+                        self.switchToSoldFilter()
+                    self.refreshAll()
             } catch {
                 self.setError("Ошибка продажи: \(error.localizedDescription)")
                 self.isShowingSellMotorSheet = false
@@ -845,7 +850,8 @@ final class AppViewModel: ObservableObject {
                     database: database,
                     motorRepository: motorRepository,
                     recoveryState: recoveryState,
-                    currentUser: currentUser
+                    currentUser: currentUser,
+                    enqueueForSyncUseCase: self.enqueueForSyncUseCase
                 )
                 
                 let result = try await useCase.execute(

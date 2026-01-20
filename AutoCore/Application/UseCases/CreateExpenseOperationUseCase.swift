@@ -8,19 +8,22 @@ final class CreateExpenseOperationUseCase {
     private let logger: LoggingService
     private let recoveryState: RecoveryState?
     private let currentUser: String
+    private let enqueueForSyncUseCase: EnqueueOperationForSyncUseCase?
     
     init(
         financialOperationRepository: FinancialOperationRepository,
         eventBus: EventBus = .shared,
         logger: LoggingService = .shared,
         recoveryState: RecoveryState? = nil,
-        currentUser: String
+        currentUser: String,
+        enqueueForSyncUseCase: EnqueueOperationForSyncUseCase? = nil
     ) {
         self.financialOperationRepository = financialOperationRepository
         self.eventBus = eventBus
         self.logger = logger
         self.recoveryState = recoveryState
         self.currentUser = currentUser
+        self.enqueueForSyncUseCase = enqueueForSyncUseCase
     }
     
     func execute(
@@ -58,6 +61,20 @@ final class CreateExpenseOperationUseCase {
             try operation.validate()
             
             let savedOperation = try financialOperationRepository.save(operation)
+            
+            // Добавляем в outbox для синхронизации с Supabase (асинхронно, не блокируем UI)
+            if let enqueueUseCase = enqueueForSyncUseCase {
+                Task.detached { [weak self] in
+                    do {
+                        try await Task { @MainActor in
+                            try enqueueUseCase.execute(operation: savedOperation)
+                        }.value
+                    } catch {
+                        self?.logger.error("Failed to enqueue operation for sync", error: error, correlationID: correlationID)
+                        // Не пробрасываем ошибку - синхронизация не критична для работы приложения
+                    }
+                }
+            }
             
             let event = FinancialOperationCreatedEvent(
                 entityID: savedOperation.id,

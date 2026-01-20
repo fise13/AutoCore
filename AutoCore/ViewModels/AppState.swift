@@ -10,14 +10,21 @@ final class AppState: ObservableObject {
     @Published var backupService: BackupService?
     @Published var settingsService: SettingsService?
     @Published var authViewModel: AuthViewModel?
+    @Published var supabaseSyncService: SupabaseSyncService?
     
     private var cancellables = Set<AnyCancellable>()
     
     init(authService: AuthService? = nil) {
-        // Инициализируем AuthService и AuthViewModel сразу
-        // Firebase уже инициализирован в AppDelegate при старте приложения
-        let authService = authService ?? FirebaseAuthAdapter()
-        self.authViewModel = AuthViewModel(authService: authService)
+        // Инициализируем Supabase Auth Service
+        let supabaseConfig = SupabaseConfig.load()
+        let supabaseAuthService = SupabaseAuthService(
+            baseURL: supabaseConfig.baseURL,
+            apiKey: supabaseConfig.apiKey
+        )
+        
+        // Используем переданный authService или SupabaseAuthService по умолчанию
+        let finalAuthService = authService ?? supabaseAuthService
+        self.authViewModel = AuthViewModel(authService: finalAuthService)
         
         // Подписываемся на изменения authState для принудительного обновления UI
         authViewModel?.$authState
@@ -40,6 +47,26 @@ final class AppState: ObservableObject {
             let settingsRepository = SQLiteSettingsRepository(database: database)
             settingsService = SettingsService(repository: settingsRepository)
             
+            // Инициализируем Supabase Sync Service
+            if supabaseConfig.isConfigured {
+                // Используем созданный SupabaseAuthService
+                let supabaseClient = SupabaseClient(
+                    baseURL: supabaseConfig.baseURL,
+                    apiKey: supabaseConfig.apiKey,
+                    authService: supabaseAuthService
+                )
+                supabaseSyncService = SupabaseSyncService(
+                    database: database,
+                    supabaseClient: supabaseClient,
+                    authService: supabaseAuthService
+                )
+                // Запускаем синхронизацию в фоне (будет работать только после логина)
+                supabaseSyncService?.startSync()
+                print("✅ Supabase Sync Service initialized and started")
+            } else {
+                print("⚠️ Supabase Sync Service not configured")
+            }
+            
             // Проверяем, открыта ли БД в read-only режиме
             if database.isReadOnly {
                 recoveryState.enable(reason: .databaseValidationFailed(
@@ -47,7 +74,7 @@ final class AppState: ObservableObject {
                 ))
             }
             
-            appViewModel = AppViewModel(database: database, recoveryState: recoveryState)
+            appViewModel = AppViewModel(database: database, recoveryState: recoveryState, supabaseSyncService: supabaseSyncService)
         } catch {
             // При ошибке открытия БД пытаемся открыть в read-only режиме
             do {
@@ -56,8 +83,34 @@ final class AppState: ObservableObject {
                 backupService = BackupService(database: database)
                 let settingsRepository = SQLiteSettingsRepository(database: database)
                 settingsService = SettingsService(repository: settingsRepository)
+                
+                // Инициализируем Supabase Sync Service
+                let supabaseConfig = SupabaseConfig.load()
+                if supabaseConfig.isConfigured {
+                    // Создаём новый SupabaseAuthService для read-only режима
+                    let supabaseAuthService = SupabaseAuthService(
+                        baseURL: supabaseConfig.baseURL,
+                        apiKey: supabaseConfig.apiKey
+                    )
+                    
+                    let supabaseClient = SupabaseClient(
+                        baseURL: supabaseConfig.baseURL,
+                        apiKey: supabaseConfig.apiKey,
+                        authService: supabaseAuthService
+                    )
+                    supabaseSyncService = SupabaseSyncService(
+                        database: database,
+                        supabaseClient: supabaseClient,
+                        authService: supabaseAuthService
+                    )
+                    supabaseSyncService?.startSync()
+                    print("✅ Supabase Sync Service initialized and started (read-only mode)")
+                } else {
+                    print("⚠️ Supabase Sync Service not configured")
+                }
+                
                 recoveryState.enable(reason: .databaseOpenFailed(error.localizedDescription))
-                appViewModel = AppViewModel(database: database, recoveryState: recoveryState)
+                appViewModel = AppViewModel(database: database, recoveryState: recoveryState, supabaseSyncService: supabaseSyncService)
             } catch {
                 // Если и read-only не работает, показываем ошибку
             errorMessage = "Не удалось открыть базу данных: \(error.localizedDescription)"

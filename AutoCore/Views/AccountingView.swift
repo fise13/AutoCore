@@ -13,20 +13,28 @@ struct AccountingView: View {
     let onLogout: (() -> Void)?
     let currentUser: UserEntity?
     
+    let database: DatabaseService
+    let enqueueForSyncUseCase: EnqueueOperationForSyncUseCase?
+    
     init(
         financialOperationRepository: FinancialOperationRepository,
+        database: DatabaseService,
         currentUser: String,
         recoveryState: RecoveryState?,
         onSettings: @escaping () -> Void,
         onLogout: (() -> Void)?,
-        userEntity: UserEntity?
+        userEntity: UserEntity?,
+        enqueueForSyncUseCase: EnqueueOperationForSyncUseCase? = nil
     ) {
         _viewModel = StateObject(wrappedValue: AccountingViewModel(financialOperationRepository: financialOperationRepository))
         self.financialOperationRepository = financialOperationRepository
+        self.database = database
+        self.enqueueForSyncUseCase = enqueueForSyncUseCase
         self.createExpenseUseCase = CreateExpenseOperationUseCase(
             financialOperationRepository: financialOperationRepository,
             recoveryState: recoveryState,
-            currentUser: currentUser
+            currentUser: currentUser,
+            enqueueForSyncUseCase: enqueueForSyncUseCase
         )
         self.onSettings = onSettings
         self.onLogout = onLogout

@@ -23,6 +23,7 @@ enum AuthError: Error, Equatable {
     case emailAlreadyInUse
     case weakPassword
     case cancelled
+    case notSupported(String)
     case unknown(String)
     
     var localizedMessage: String {
@@ -39,6 +40,8 @@ enum AuthError: Error, Equatable {
             return "Пароль слишком слабый"
         case .cancelled:
             return "Вход отменен"
+        case .notSupported(let message):
+            return message
         case .unknown(let message):
             return message
         }

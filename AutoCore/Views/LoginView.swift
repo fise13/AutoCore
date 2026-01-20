@@ -123,36 +123,6 @@ struct LoginView: View {
                     .disabled(authViewModel.isSigningIn || email.isEmpty || password.isEmpty)
                     .keyboardShortcut(.return, modifiers: .command)
                     
-                    // Divider
-                    HStack {
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundStyle(Color(NSColor.separatorColor))
-                        Text("or")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundStyle(Color(NSColor.separatorColor))
-                    }
-                    .frame(width: 360)
-                    
-                    // Sign in with Google
-                    Button(action: handleSignInWithGoogle) {
-                        Group {
-                            if authViewModel.isSigningIn {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Label("Sign in with Google", systemImage: "globe")
-                            }
-                        }
-                        .frame(width: 360)
-                        .frame(height: 36)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(authViewModel.isSigningIn)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -185,11 +155,4 @@ struct LoginView: View {
         }
     }
     
-    private func handleSignInWithGoogle() {
-        guard !authViewModel.isSigningIn else { return }
-        
-        Task {
-            await authViewModel.signInWithGoogle()
-        }
-    }
 }

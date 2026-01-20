@@ -310,13 +310,15 @@ struct RootView: View {
             case .accounting:
                 AccountingView(
                     financialOperationRepository: FinancialOperationRepositoryImpl(database: appViewModel.database),
+                    database: appViewModel.database,
                     currentUser: appState.authViewModel?.currentUser?.email ?? appState.authViewModel?.currentUser?.displayName ?? "Система",
                     recoveryState: appState.recoveryState,
                     onSettings: { isShowingSettings = true },
                     onLogout: appState.authViewModel != nil ? {
                         appState.authViewModel?.signOut()
                     } : nil,
-                    userEntity: appState.authViewModel?.currentUser
+                    userEntity: appState.authViewModel?.currentUser,
+                    enqueueForSyncUseCase: appViewModel.enqueueForSyncUseCase
                 )
             case .sold:
                 SoldMotorsView(
