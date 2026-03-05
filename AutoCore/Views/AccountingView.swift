@@ -448,6 +448,7 @@ struct OperationRow: View {
     private func operationTypeName(_ type: FinancialOperationEntity.OperationType) -> String {
         switch type {
         case .sale: return "Продажа"
+        case .income: return "Приход"
         case .refund: return "Возврат"
         case .expense: return "Расход"
         case .transfer: return "Перевод"
@@ -456,7 +457,7 @@ struct OperationRow: View {
     
     private func operationTypeColor(_ type: FinancialOperationEntity.OperationType) -> Color {
         switch type {
-        case .sale: return .green
+        case .sale, .income: return .green
         case .refund: return .orange
         case .expense: return .red
         case .transfer: return .blue

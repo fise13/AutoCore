@@ -1901,7 +1901,8 @@ nonisolated final class DatabaseService {
         source: String = "",
         details: String = "",
         category: String? = nil,
-        description: String = ""
+        description: String = "",
+        cloudRecordId: String? = nil
     ) throws -> Int64 {
         try assertNotReadOnly()
         let createdAtStr = dateFormatter.string(from: createdAt)
@@ -1949,7 +1950,8 @@ nonisolated final class DatabaseService {
         source: String = "",
         details: String = "",
         category: String? = nil,
-        description: String = ""
+        description: String = "",
+        cloudRecordId: String? = nil
     ) throws -> Int64 {
         let createdAtStr = dateFormatter.string(from: createdAt)
         try executeUnlocked(
@@ -2008,6 +2010,13 @@ nonisolated final class DatabaseService {
                 description: optionalStringColumn(statement, index: 14) ?? ""
             )
         }.first
+    }
+
+    /// Поиск финансовой операции по CloudKit record ID.
+    /// Сейчас таблица `financial_operations` не хранит `cloud_record_id`, поэтому метод всегда возвращает nil.
+    /// Оставлен как заглушка, чтобы CloudKit-синхронизация могла собираться; при расширении схемы БД сюда нужно добавить реальный запрос.
+    func fetchFinancialOperationByCloudRecordId(_ cloudRecordId: String) throws -> FinancialOperation? {
+        return nil
     }
     
     func fetchFinancialOperationUnlocked(id: Int64) throws -> FinancialOperation? {

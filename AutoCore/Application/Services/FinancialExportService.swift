@@ -849,6 +849,7 @@ final class FinancialExportService {
     private func formatOperationType(_ type: FinancialOperationEntity.OperationType) -> String {
         switch type {
         case .sale: return "Продажа"
+        case .income: return "Приход"
         case .refund: return "Возврат"
         case .expense: return "Расход"
         case .transfer: return "Перевод"

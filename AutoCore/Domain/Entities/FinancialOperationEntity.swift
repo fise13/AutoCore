@@ -22,6 +22,8 @@ struct FinancialOperationEntity {
     /// Тип операции
     enum OperationType: String, Codable {
         case sale = "sale"
+        /// Прямой приход денег (внесение средств без привязки к мотору)
+        case income = "income"
         case refund = "refund"
         case expense = "expense"
         case transfer = "transfer"

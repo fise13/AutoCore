@@ -26,11 +26,6 @@ struct AutoCoreApp: App {
         
         // Теперь безопасно создаем AppState (который создаст FirebaseAuthAdapter)
         _appState = StateObject(wrappedValue: AppState())
-        
-        // Запускаем сервис обновлений при старте приложения
-        Task { @MainActor in
-            UpdateService.shared.start()
-        }
     }
 
     var body: some Scene {

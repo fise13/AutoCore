@@ -140,4 +140,23 @@ final class AuthViewModel: ObservableObject {
     func clearError() {
         errorMessage = nil
     }
+
+    /// Обновление отображаемого имени пользователя (для провайдеров, которые это поддерживают).
+    /// Сейчас поддерживается только авторизация через Apple ID (CloudKitAuthService).
+    func updateProfile(displayName: String?) async {
+        errorMessage = nil
+        
+        guard let cloudKitService = authService as? CloudKitAuthService else {
+            errorMessage = "Обновление профиля недоступно для текущего способа входа"
+            return
+        }
+        
+        do {
+            try await cloudKitService.updateProfile(displayName: displayName)
+        } catch let error as AuthError {
+            errorMessage = error.localizedMessage
+        } catch {
+            errorMessage = "Ошибка обновления профиля: \(error.localizedDescription)"
+        }
+    }
 }

@@ -22,10 +22,7 @@ struct RootView: View {
     @State private var batchNoteText = ""
     @State private var batchNoteMotorIDs: [Int64] = []
     // Inspector убран - детали открываются через двойной клик или контекстное меню
-    @State private var isShowingUpdateNotification = false
-    @State private var isShowingUpdateSuccess = false
     @State private var isShowingSettings = false
-    @StateObject private var updateService = UpdateService.shared
     
     // Окно для показа панелей (получается через WindowAccessor)
     @State private var hostWindow: NSWindow?
@@ -149,18 +146,6 @@ struct RootView: View {
                 // Вызываем напрямую - onChange уже выполняется вне контекста рендера
                 handleSectionChange(newValue)
             }
-            .sheet(isPresented: $isShowingUpdateNotification) {
-                UpdateNotificationView(updateService: updateService, isPresented: $isShowingUpdateNotification)
-            }
-            .onReceive(updateService.$availableUpdate.compactMap { $0 }) { _ in
-                // Показываем уведомление при обнаружении обновления
-                isShowingUpdateNotification = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UpdateError"))) { notification in
-                if let errorMessage = notification.object as? String {
-                    showAlert("Ошибка при обновлении: \(errorMessage)")
-                }
-            }
             .sheet(isPresented: $isShowingSettings) {
                 if let backupService = appState.backupService,
                    let featureFlagService = appState.featureFlagService,
@@ -190,25 +175,7 @@ struct RootView: View {
             } message: {
                 Text("Заметка будет добавлена к существующим заметкам выбранных моторов")
             }
-            .sheet(isPresented: $isShowingUpdateSuccess) {
-                if let version = updateService.successVersion {
-                    UpdateSuccessView(
-                        isPresented: $isShowingUpdateSuccess,
-                        version: version
-                    )
-                    .onDisappear {
-                        // После закрытия диалога - запускаем новую версию и завершаем текущую
-                        Task {
-                            await launchNewVersionAfterUpdate()
-                        }
-                    }
-                }
-            }
-            .onReceive(updateService.$showSuccessDialog) { show in
-                if show {
-                    isShowingUpdateSuccess = true
-                }
-            }
+            // Обновления приложения отключены: никаких сетевых проверок и диалогов
     }
     
     @ViewBuilder
