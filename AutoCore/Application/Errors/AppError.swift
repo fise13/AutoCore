@@ -8,6 +8,7 @@ enum AppError: LocalizedError {
     case exportError(message: String)
     case logicError(message: String)
     case notFound(message: String)
+    case syncError(message: String)
     
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,8 @@ enum AppError: LocalizedError {
             return "Ошибка логики: \(message)"
         case .notFound(let message):
             return "Не найдено: \(message)"
+        case .syncError(let message):
+            return message
         }
     }
     

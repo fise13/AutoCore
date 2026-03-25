@@ -44,7 +44,7 @@ struct ProfileView: View {
                             Text("Роль")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(user.role.displayName)
+                            Text(user.role.localizedDisplayName)
                                 .foregroundStyle(.primary)
                         }
                         

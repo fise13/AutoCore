@@ -22,7 +22,7 @@ struct MotorEntity {
     }
     
     /// Domain Rule: sold_date != null → статус продан
-    var availability: AutoCore.MotorAvailability {
+    var availability: MotorAvailability {
         soldDate == nil ? .available : .sold
     }
     

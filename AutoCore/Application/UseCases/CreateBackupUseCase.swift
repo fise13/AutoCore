@@ -1,4 +1,9 @@
 import Foundation
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Use Case: Create Backup
 @MainActor
@@ -27,15 +32,7 @@ final class CreateBackupUseCase {
         let correlationID = UUIDv7.generateString()
         logger.info("Creating backup", correlationID: correlationID)
         
-        // Получаем путь к БД
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.sqlite").path
-        
+        let dbPath = databaseService.databaseFileURL.path
         guard FileManager.default.fileExists(atPath: dbPath) else {
             throw BackupError.backupNotFound
         }
@@ -48,8 +45,12 @@ final class CreateBackupUseCase {
         // Получаем версию приложения
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         
-        // Получаем имя устройства
+        // Получаем имя устройства (для iOS используем UIDevice, для macOS — Host)
+        #if os(macOS)
         let deviceName = Host.current().localizedName ?? Host.current().name ?? "Unknown"
+        #else
+        let deviceName = UIDevice.current.name
+        #endif
         
         // Создаём metadata
         let metadata = BackupEntity.Metadata(

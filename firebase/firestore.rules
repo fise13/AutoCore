@@ -1,0 +1,233 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------
+    // Common helpers
+    // -------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userRef() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function userDoc() {
+      let ref = userRef();
+      return exists(ref) ? get(ref).data : null;
+    }
+
+    function companyRef(companyId) {
+      return /databases/$(database)/documents/companies/$(companyId);
+    }
+
+    function userCompanyId() {
+      return request.auth.token.companyId != null && request.auth.token.companyId != ""
+        ? request.auth.token.companyId
+        : (userDoc() != null ? userDoc().companyId : null);
+    }
+
+    function hasCompany() {
+      let cid = userCompanyId();
+      return isSignedIn() && cid != null && cid != "";
+    }
+
+    function isRoleIn(allowed) {
+      let tokenRole = request.auth.token.role;
+      let docRole = userDoc() != null ? userDoc().role : null;
+      return (tokenRole != null && tokenRole in allowed) || (docRole != null && docRole in allowed);
+    }
+
+    function isOwnerOrAdmin() {
+      return isRoleIn(['owner', 'admin']);
+    }
+
+    function canWriteFinancial() {
+      return isRoleIn(['owner', 'admin', 'accountant', 'employee']);
+    }
+
+    function sameCompanyDoc() {
+      return hasCompany()
+        && resource.data.companyId != null
+        && resource.data.companyId == userCompanyId();
+    }
+
+    function sameCompanyRequest() {
+      return hasCompany()
+        && request.resource.data.companyId != null
+        && request.resource.data.companyId == userCompanyId();
+    }
+
+    function companyOwnerIsCurrentUser(companyId) {
+      return companyId != null
+        && companyId != ""
+        && exists(companyRef(companyId))
+        && get(companyRef(companyId)).data.ownerId == request.auth.uid;
+    }
+
+    function canReadCompanyMembers(companyId) {
+      return isSignedIn()
+        && companyId != null
+        && companyId != ""
+        && (
+          companyId == userCompanyId() && isOwnerOrAdmin()
+          || companyOwnerIsCurrentUser(companyId)
+        );
+    }
+
+    function companyMatchesForRead(docCompanyId) {
+      return hasCompany() && docCompanyId != null && docCompanyId == userCompanyId();
+    }
+
+    function companyMatchesForWrite(docCompanyId) {
+      return hasCompany() && docCompanyId != null && docCompanyId == userCompanyId();
+    }
+
+    function canManageInviteByRequest() {
+      return isSignedIn()
+        && request.resource.data.companyId != null
+        && request.resource.data.companyId == userCompanyId()
+        && isOwnerOrAdmin();
+    }
+
+    function canManageInviteByResource() {
+      return isSignedIn()
+        && resource.data.companyId != null
+        && resource.data.companyId == userCompanyId()
+        && isOwnerOrAdmin();
+    }
+
+    // -------------------------
+    // users/{userId}
+    // -------------------------
+    match /users/{userId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == userId
+        || canReadCompanyMembers(resource.data.companyId)
+      );
+
+      // User can create/update/delete only own profile doc.
+      allow create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // -------------------------
+    // companies/{companyId}
+    // -------------------------
+    match /companies/{companyId} {
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow read: if hasCompany()
+        && companyId == userCompanyId();
+
+      allow update, delete: if hasCompany()
+        && companyId == userCompanyId()
+        && isOwnerOrAdmin();
+    }
+
+    // -------------------------
+    // tasks/{taskId}
+    // -------------------------
+    match /tasks/{taskId} {
+      allow read: if sameCompanyDoc();
+      allow create, update, delete: if sameCompanyRequest() && isOwnerOrAdmin();
+    }
+
+    // -------------------------
+    // invites/{inviteId}
+    // -------------------------
+    match /invites/{inviteId} {
+      allow read: if isSignedIn();
+
+      allow create: if canManageInviteByRequest();
+      allow delete: if canManageInviteByResource();
+
+      // Owner/admin can update invite in own company.
+      // Also allow marking invite as used (join flow).
+      allow update: if canManageInviteByRequest()
+        || (
+          isSignedIn()
+          && resource.data.used != true
+          && request.resource.data.used == true
+        );
+    }
+
+    // -------------------------
+    // Financial collections (доход/расход, списание, пополнение)
+    // -------------------------
+    // Для create/update/delete нужны companyId и role в users/{uid} (после создания компании на iOS/онбординга).
+    // canReadByCompanyDoc — явная проверка users/{uid}.companyId (fallback при расхождении userDoc/userCompanyId).
+    match /financialOperations/{operationId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create: if (canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId)) && canWriteFinancial();
+      allow update, delete: if (canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId)) && canWriteFinancial();
+    }
+
+    match /operations/{operationId} {
+      allow read: if companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    match /accounts/{accountId} {
+      allow read: if companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    // Явная проверка по users/{uid}.companyId (без userDoc/userCompanyId).
+    function canReadByCompanyDoc(docCompanyId) {
+      return isSignedIn() && docCompanyId != null && exists(userRef())
+        && get(userRef()).data.get('companyId', null) == docCompanyId;
+    }
+    function canWriteByCompanyDoc(docCompanyId) {
+      return isSignedIn() && docCompanyId != null && exists(userRef())
+        && get(userRef()).data.get('companyId', null) == docCompanyId;
+    }
+
+    // -------------------------
+    // Engine / Motor catalog
+    // -------------------------
+    match /engines/{engineId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    match /motors/{motorId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    match /brands/{brandId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    // -------------------------
+    // Warehouse module
+    // -------------------------
+    match /inventoryItems/{itemId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    match /inventoryMovements/{movementId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    // -------------------------
+    // documents (сканы накладных и т.п.)
+    // -------------------------
+    match /documents/{documentId} {
+      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
+      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    }
+
+    // -------------------------
+    // Default deny
+    // -------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

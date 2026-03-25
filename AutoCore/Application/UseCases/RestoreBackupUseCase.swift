@@ -47,31 +47,19 @@ final class RestoreBackupUseCase {
             throw BackupError.invalidMetadata
         }
         
-        // Получаем путь к текущей БД
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let currentDBPath = appSupport.appendingPathComponent("AutoCore/autocore.sqlite")
-        
-        // Закрываем текущую БД
-        // ВАЖНО: DatabaseService должен быть закрыт перед заменой файла
-        // Это делается на уровне приложения
-        
-        // Создаём резервную копию текущей БД
+        let currentDBPath = databaseService.databaseFileURL
+        databaseService.closeForTeardown()
+
         if FileManager.default.fileExists(atPath: currentDBPath.path) {
             let backupCurrentPath = currentDBPath.path + ".backup_\(Int(Date().timeIntervalSince1970))"
             try FileManager.default.copyItem(atPath: currentDBPath.path, toPath: backupCurrentPath)
             logger.info("Current database backed up to: \(backupCurrentPath)", correlationID: correlationID)
         }
-        
-        // Заменяем БД
+
         if FileManager.default.fileExists(atPath: currentDBPath.path) {
             try FileManager.default.removeItem(at: currentDBPath)
         }
-        
+
         try FileManager.default.copyItem(at: databaseFile, to: currentDBPath)
         
         logger.info("Backup restored successfully", correlationID: correlationID)

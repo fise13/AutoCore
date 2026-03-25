@@ -96,14 +96,15 @@ struct BackupManagementView: View {
         }
     }
     
-    private func restoreFromBackup(_ backup: BackupService.BackupInfo) {
+private func restoreFromBackup(_ backup: BackupService.BackupInfo) {
         Task {
             do {
                 try await Task { @MainActor in
                     try backupService.restore(from: backup)
                 }.value
                 
-                // Показываем сообщение о необходимости перезапуска
+                #if os(macOS)
+                // Показываем сообщение о необходимости перезапуска (только macOS)
                 DispatchQueue.main.async {
                     let alert = NSAlert()
                     alert.messageText = "Бэкап восстановлен"
@@ -112,6 +113,7 @@ struct BackupManagementView: View {
                     alert.addButton(withTitle: "OK")
                     alert.runModal()
                 }
+                #endif
             } catch {
                 print("Failed to restore backup: \(error)")
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
 
 struct KeyboardHandler: NSViewRepresentable {
@@ -97,3 +98,39 @@ private class KeyboardHandlingView: NSView {
         }
     }
 }
+#else
+import UIKit
+
+struct KeyboardHandler: View {
+    let onTab: () -> Void
+    let onShiftTab: () -> Void
+    let onEnter: () -> Void
+    let onEscape: () -> Void
+    let onArrowUp: (() -> Void)?
+    let onArrowDown: (() -> Void)?
+    let onArrowLeft: (() -> Void)?
+    let onArrowRight: (() -> Void)?
+    
+    init(
+        onTab: @escaping () -> Void,
+        onShiftTab: @escaping () -> Void,
+        onEnter: @escaping () -> Void,
+        onEscape: @escaping () -> Void,
+        onArrowUp: (() -> Void)? = nil,
+        onArrowDown: (() -> Void)? = nil,
+        onArrowLeft: (() -> Void)? = nil,
+        onArrowRight: (() -> Void)? = nil
+    ) {
+        self.onTab = onTab
+        self.onShiftTab = onShiftTab
+        self.onEnter = onEnter
+        self.onEscape = onEscape
+        self.onArrowUp = onArrowUp
+        self.onArrowDown = onArrowDown
+        self.onArrowLeft = onArrowLeft
+        self.onArrowRight = onArrowRight
+    }
+    
+    var body: some View { EmptyView() }
+}
+#endif

@@ -128,7 +128,6 @@ struct AddIncomeView: View {
             }
         }
         .frame(minWidth: 450, minHeight: 520)
-        .preferredColorScheme(.dark)
     }
     
     private var isValid: Bool {

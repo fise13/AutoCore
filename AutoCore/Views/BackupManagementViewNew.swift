@@ -1,15 +1,29 @@
 import SwiftUI
-import AppKit
 import Combine
+#if os(macOS)
+import AppKit
+#endif
+#if os(iOS)
+import UIKit
+#endif
 
 /// Новый UI для управления бэкапами с ZIP архивами
 struct BackupManagementViewNew: View {
+    #if os(macOS)
+    private static var controlBackgroundColor: Color { Color(NSColor.controlBackgroundColor) }
+    #else
+    private static var controlBackgroundColor: Color { Color(UIColor.systemBackground) }
+    #endif
+
     @StateObject private var viewModel: BackupManagementViewModel
     @State private var isShowingRestoreAlert = false
     @State private var isShowingDeleteAlert = false
     @State private var selectedBackup: BackupEntity?
     @State private var errorMessage: String?
-    
+    #if os(iOS)
+    @State private var showRestoreSuccessAlert = false
+    #endif
+
     init(
         backupRepository: BackupRepository,
         databaseService: DatabaseService,
@@ -70,6 +84,15 @@ struct BackupManagementViewNew: View {
         } message: { message in
             Text(message)
         }
+        #if os(iOS)
+        .alert("Бэкап восстановлен", isPresented: $showRestoreSuccessAlert) {
+            Button("OK") {
+                viewModel.loadBackups()
+            }
+        } message: {
+            Text("Перезапустите приложение для применения изменений.")
+        }
+        #endif
         .onAppear {
             viewModel.loadBackups()
         }
@@ -115,7 +138,7 @@ struct BackupManagementViewNew: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity)
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Self.controlBackgroundColor)
     }
     
     private var loadingView: some View {
@@ -182,7 +205,7 @@ struct BackupManagementViewNew: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(Self.controlBackgroundColor)
             
             Divider()
             
@@ -257,7 +280,9 @@ struct BackupManagementViewNew: View {
                 }
                 .width(min: 160, ideal: 180)
             }
+            #if os(macOS)
             .tableStyle(.inset(alternatesRowBackgrounds: true))
+            #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -279,13 +304,16 @@ struct BackupManagementViewNew: View {
         viewModel.restoreBackup(backup: backup) { result in
             switch result {
             case .success:
-                // Показываем сообщение о необходимости перезапуска
+                #if os(macOS)
                 let alert = NSAlert()
                 alert.messageText = "Бэкап восстановлен"
                 alert.informativeText = "Пожалуйста, перезапустите приложение для применения изменений."
                 alert.alertStyle = .informational
                 alert.addButton(withTitle: "OK")
                 alert.runModal()
+                #else
+                showRestoreSuccessAlert = true
+                #endif
                 viewModel.loadBackups()
             case .failure(let error):
                 errorMessage = "Ошибка восстановления: \(error.localizedDescription)"
@@ -308,7 +336,11 @@ struct BackupManagementViewNew: View {
         Task {
             do {
                 let backupsDir = try viewModel.getBackupsDirectory()
+                #if os(macOS)
                 NSWorkspace.shared.open(backupsDir)
+                #else
+                errorMessage = "На iOS папку бэкапов открыть нельзя."
+                #endif
             } catch {
                 errorMessage = "Не удалось открыть папку: \(error.localizedDescription)"
             }

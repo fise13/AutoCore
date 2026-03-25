@@ -1,8 +1,19 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
 import AppKit
+#endif
+#if os(iOS)
+import UIKit
+#endif
 
 struct AccountingView: View {
+    #if os(macOS)
+    static var controlBackgroundColor: Color { Color(NSColor.controlBackgroundColor) }
+    #else
+    static var controlBackgroundColor: Color { Color(UIColor.systemBackground) }
+    #endif
+
     @StateObject private var viewModel: AccountingViewModel
     @State private var isShowingAddExpense = false
     @State private var isShowingExport = false
@@ -12,6 +23,8 @@ struct AccountingView: View {
     let onSettings: () -> Void
     let onLogout: (() -> Void)?
     let currentUser: UserEntity?
+    private let database: DatabaseService?
+    private let syncCompanyId: String?
     
     init(
         financialOperationRepository: FinancialOperationRepository,
@@ -19,7 +32,9 @@ struct AccountingView: View {
         recoveryState: RecoveryState?,
         onSettings: @escaping () -> Void,
         onLogout: (() -> Void)?,
-        userEntity: UserEntity?
+        userEntity: UserEntity?,
+        database: DatabaseService? = nil,
+        companyId: String? = nil
     ) {
         _viewModel = StateObject(wrappedValue: AccountingViewModel(financialOperationRepository: financialOperationRepository))
         self.financialOperationRepository = financialOperationRepository
@@ -31,6 +46,8 @@ struct AccountingView: View {
         self.onSettings = onSettings
         self.onLogout = onLogout
         self.currentUser = userEntity
+        self.database = database
+        self.syncCompanyId = companyId
     }
     
     @State private var selectedTab = 0
@@ -96,14 +113,35 @@ struct AccountingView: View {
         .onChange(of: viewModel.searchText) { _, _ in
             viewModel.refreshOperations()
         }
+        #if os(macOS)
+        .task(id: syncCompanyId) {
+            guard let db = database, let cid = syncCompanyId, !cid.isEmpty else { return }
+            let sync = FirestoreFinancialSyncService()
+            do {
+                try await sync.pullAndMergeFinancialOperations(companyId: cid, database: db)
+                try await sync.pushLocalOperationsToFirestore(companyId: cid, database: db)
+                await MainActor.run { viewModel.refreshAll() }
+            } catch {
+                // начальная синхронизация не блокирует показ данных
+            }
+            for await entities in sync.observeOperations(companyId: cid) {
+                guard !Task.isCancelled else { break }
+                do {
+                    try await sync.mergeEntitiesIntoDatabase(entities, companyId: cid, database: db)
+                    await MainActor.run { viewModel.refreshAll() }
+                } catch {
+                    // observe merge не блокирует
+                }
+            }
+        }
+        #endif
     }
     
     private func performExport(config: FinancialExportConfig) {
         Task {
             do {
                 let exportService = FinancialExportService(financialOperationRepository: financialOperationRepository)
-                
-                // Выбираем файл для сохранения
+                #if os(macOS)
                 let savePanel = NSSavePanel()
                 let fileExtension = config.format == .excel ? "xlsx" : "pdf"
                 savePanel.allowedContentTypes = [config.format == .excel ? .init(filenameExtension: "xlsx")! : .pdf]
@@ -120,15 +158,31 @@ struct AccountingView: View {
                             try exportService.exportToPDF(config: config, to: url)
                         }.value
                     }
-                    
-                    // Показываем уведомление об успехе
                     await MainActor.run {
                         NSWorkspace.shared.open(fileURL)
                     }
                 }
+                #else
+                let fileExtension = config.format == .excel ? "xlsx" : "pdf"
+                let fileName = "Финансовый отчёт \(dateFormatter.string(from: Date())).\(fileExtension)"
+                let tempDir = FileManager.default.temporaryDirectory
+                let fileURL = tempDir.appendingPathComponent(fileName)
+                if config.format == .excel {
+                    _ = try await Task.detached {
+                        try exportService.exportToExcel(config: config, to: fileURL)
+                    }.value
+                } else {
+                    _ = try await Task.detached {
+                        try exportService.exportToPDF(config: config, to: fileURL)
+                    }.value
+                }
+                await MainActor.run {
+                    isShowingExport = false
+                    // iOS: файл сохранён во временную папку; можно показать share sheet через ExportSettingsView или оставить как есть
+                }
+                #endif
             } catch {
                 print("Ошибка экспорта: \(error)")
-                // TODO: Показать alert с ошибкой
             }
         }
     }
@@ -173,7 +227,7 @@ struct AccountingOverviewView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(AccountingView.controlBackgroundColor)
                 .cornerRadius(8)
                 .padding(.horizontal)
                 
@@ -209,7 +263,7 @@ struct BalanceCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(AccountingView.controlBackgroundColor)
         .cornerRadius(8)
     }
     
@@ -237,7 +291,7 @@ struct CashboxView: View {
                     .foregroundStyle(.green)
             }
             .padding()
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(AccountingView.controlBackgroundColor)
             .cornerRadius(8)
             .padding()
             
@@ -408,7 +462,7 @@ struct OperationRow: View {
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color(NSColor.controlBackgroundColor))
+                        .background(AccountingView.controlBackgroundColor)
                         .cornerRadius(4)
                 }
                 
@@ -448,6 +502,7 @@ struct OperationRow: View {
     private func operationTypeName(_ type: FinancialOperationEntity.OperationType) -> String {
         switch type {
         case .sale: return "Продажа"
+        case .income: return "Приход"
         case .refund: return "Возврат"
         case .expense: return "Расход"
         case .transfer: return "Перевод"
@@ -457,6 +512,7 @@ struct OperationRow: View {
     private func operationTypeColor(_ type: FinancialOperationEntity.OperationType) -> Color {
         switch type {
         case .sale: return .green
+        case .income: return .green
         case .refund: return .orange
         case .expense: return .red
         case .transfer: return .blue

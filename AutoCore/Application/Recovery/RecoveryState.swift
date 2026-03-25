@@ -20,11 +20,11 @@ final class RecoveryState: ObservableObject {
         var message: String {
             switch self {
             case .databaseOpenFailed(let msg):
-                return "Не удалось открыть базу данных: \(msg)"
+                return L10n.Recovery.databaseOpenFailed(msg)
             case .databaseValidationFailed(let msg):
-                return "Ошибка валидации базы данных: \(msg)"
+                return L10n.Recovery.databaseValidationFailed(msg)
             case .migrationFailed(let msg):
-                return "Ошибка миграции базы данных: \(msg)"
+                return L10n.Recovery.migrationFailed(msg)
             }
         }
     }
@@ -45,7 +45,7 @@ final class RecoveryState: ObservableObject {
     func assertNotInRecoveryMode() throws {
         guard !isRecoveryMode else {
             throw AppError.databaseError(
-                message: "Операция заблокирована в режиме восстановления. \(recoveryMessage ?? "")"
+                message: L10n.Recovery.operationBlocked(recoveryMessage)
             )
         }
     }

@@ -7,189 +7,195 @@
 //
 
 import SwiftUI
+import AuthenticationServices
+
+#if os(macOS)
 
 struct LoginView: View {
     @ObservedObject var authViewModel: AuthViewModel
     
+    @State private var isRegistrationMode = false
     @State private var email: String = ""
     @State private var password: String = ""
-    @FocusState private var focusedField: LoginField?
+    @State private var confirmPassword: String = ""
+    @State private var passwordMismatch: Bool = false
     
-    enum LoginField: Hashable {
-        case email
-        case password
+    private var canSubmit: Bool {
+        if isRegistrationMode {
+            !email.isEmpty && !password.isEmpty && !confirmPassword.isEmpty && password == confirmPassword
+        } else {
+            !email.isEmpty && !password.isEmpty
+        }
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(nsColor: .underPageBackgroundColor),
+                    Color.accentColor.opacity(0.08)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
             
-            // Центрированный контент
-            VStack(spacing: 32) {
-                // Заголовок
-                VStack(spacing: 6) {
-                    Text("AutoCore")
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundStyle(.primary)
+            VStack {
+                Spacer()
+                
+                VStack(spacing: 20) {
+                    // Header
+                    VStack(spacing: 8) {
+                        Text(L10n.Login.appTitle)
+                            .font(.system(size: 31, weight: .bold, design: .rounded))
+                        Text(isRegistrationMode ? L10n.Login.createAccount : L10n.Login.chooseSignIn)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                     
-                    Text("Sign in to continue")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                    // Card
+                    VStack(spacing: 16) {
+                        if let errorMessage = authViewModel.errorMessage {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.red)
+                                Text(errorMessage)
+                                    .font(.system(size: 12))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 4)
+                        }
+                        
+                        // Quick providers (only for login)
+                        if !isRegistrationMode {
+                            VStack(spacing: 8) {
+                                SignInWithAppleButton(
+                                    .signIn,
+                                    onRequest: { request in
+                                        request.requestedScopes = [.fullName, .email]
+                                    },
+                                    onCompletion: { result in
+                                        switch result {
+                                        case .success(let authResult):
+                                            if let credential = authResult.credential as? ASAuthorizationAppleIDCredential {
+                                                Task {
+                                                    await authViewModel.handleAppleSignIn(credential: credential)
+                                                }
+                                            }
+                                        case .failure(let error):
+                                            authViewModel.setError(L10n.Login.appleError(error.localizedDescription))
+                                        }
+                                    }
+                                )
+                                .signInWithAppleButtonStyle(.black)
+                                .frame(height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                
+                                Button {
+                                    Task {
+                                        await authViewModel.signInWithGoogle()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "g.circle.fill")
+                                        Text(L10n.Login.signInGoogle)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.large)
+                            }
+                            
+                            // Divider
+                            HStack {
+                                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+                                Text(L10n.Login.orEmail)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+                            }
+                        }
+                        
+                        // Email / password form
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextField("Email", text: $email)
+                                .textFieldStyle(.roundedBorder)
+                            
+                            SecureField(L10n.Login.password, text: $password)
+                                .textFieldStyle(.roundedBorder)
+                            
+                            if isRegistrationMode {
+                                SecureField(L10n.Login.confirmPassword, text: $confirmPassword)
+                                    .textFieldStyle(.roundedBorder)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(passwordMismatch ? Color.red : Color.clear, lineWidth: 1)
+                                    )
+                                    .onChange(of: confirmPassword) { _, _ in
+                                        passwordMismatch = !confirmPassword.isEmpty && password != confirmPassword
+                                    }
+                                
+                                if passwordMismatch {
+                                    Text(L10n.Login.passwordsMismatch)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+                            }
+                            
+                            Button {
+                                if isRegistrationMode {
+                                    passwordMismatch = !confirmPassword.isEmpty && password != confirmPassword
+                                    guard canSubmit else { return }
+                                    Task {
+                                        await authViewModel.signUp(email: email, password: password)
+                                    }
+                                } else {
+                                    Task {
+                                        await authViewModel.signIn(email: email, password: password)
+                                    }
+                                }
+                            } label: {
+                                Text(isRegistrationMode ? L10n.Login.signUp : L10n.Login.signIn)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .disabled(!canSubmit)
+                        }
+                        
+                        // Switch mode link
+                        Button {
+                            isRegistrationMode.toggle()
+                            confirmPassword = ""
+                            passwordMismatch = false
+                            authViewModel.clearError()
+                        } label: {
+                            Text(isRegistrationMode ? L10n.Login.haveAccountSignIn : L10n.Login.noAccountRegister)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(22)
+                    .frame(width: 390)
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.12), radius: 22, x: 0, y: 10)
                 }
                 
-                // Форма входа
-                VStack(spacing: 16) {
-                    // Email field
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("Email", text: $email)
-                            .textFieldStyle(.plain)
-                            .focused($focusedField, equals: .email)
-                            .textContentType(.emailAddress)
-                            .autocorrectionDisabled()
-                            .frame(width: 360)
-                            .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(NSColor.textBackgroundColor))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .strokeBorder(
-                                                focusedField == .email ? Color.accentColor : Color(NSColor.separatorColor),
-                                                lineWidth: focusedField == .email ? 2 : 1
-                                            )
-                                    )
-                            )
-                            .onSubmit {
-                                if !email.isEmpty {
-                                    focusedField = .password
-                                }
-                            }
-                    }
-                    
-                    // Password field
-                    VStack(alignment: .leading, spacing: 8) {
-                        SecureField("Password", text: $password)
-                            .textFieldStyle(.plain)
-                            .focused($focusedField, equals: .password)
-                            .textContentType(.password)
-                            .frame(width: 360)
-                            .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(NSColor.textBackgroundColor))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .strokeBorder(
-                                                focusedField == .password ? Color.accentColor : Color(NSColor.separatorColor),
-                                                lineWidth: focusedField == .password ? 2 : 1
-                                            )
-                                    )
-                            )
-                            .onSubmit {
-                                if !email.isEmpty && !password.isEmpty {
-                                    handleSignIn()
-                                }
-                            }
-                    }
-                    
-                    // Error message
-                    if let errorMessage = authViewModel.errorMessage {
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.red)
-                                .font(.system(size: 12))
-                            Text(errorMessage)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.red)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                    }
-                    
-                    // Sign In button
-                    Button(action: handleSignIn) {
-                        Group {
-                            if authViewModel.isSigningIn {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Text("Sign In")
-                            }
-                        }
-                        .frame(width: 360)
-                        .frame(height: 36)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(authViewModel.isSigningIn || email.isEmpty || password.isEmpty)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    
-                    // Divider
-                    HStack {
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundStyle(Color(NSColor.separatorColor))
-                        Text("or")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundStyle(Color(NSColor.separatorColor))
-                    }
-                    .frame(width: 360)
-                    
-                    // Sign in with Google
-                    Button(action: handleSignInWithGoogle) {
-                        Group {
-                            if authViewModel.isSigningIn {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Label("Sign in with Google", systemImage: "globe")
-                            }
-                        }
-                        .frame(width: 360)
-                        .frame(height: 36)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(authViewModel.isSigningIn)
-                }
+                Spacer()
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
-            
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
-        .onAppear {
-            // Фокус на email поле при появлении
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                focusedField = .email
-            }
+            .padding()
         }
         .onExitCommand {
-            // Esc → очистка ошибки
             authViewModel.clearError()
         }
     }
-    
-    // MARK: - Private Methods
-    
-    private func handleSignIn() {
-        guard !email.isEmpty && !password.isEmpty else { return }
-        guard !authViewModel.isSigningIn else { return }
-        
-        Task {
-            await authViewModel.signIn(email: email, password: password)
-        }
-    }
-    
-    private func handleSignInWithGoogle() {
-        guard !authViewModel.isSigningIn else { return }
-        
-        Task {
-            await authViewModel.signInWithGoogle()
-        }
-    }
 }
+
+#endif

@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct ExportSettingsView: View {
     @Binding var isPresented: Bool
     let onExport: (ExportSettings) -> Void
@@ -199,3 +201,5 @@ struct ExportSettingsView: View {
         }
     }
 }
+
+#endif

@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct ImportWizardView: View {
     @ObservedObject var viewModel: ImportViewModel
     let existingBrands: [Brand]
@@ -570,4 +572,6 @@ private struct PreviewRow: Identifiable {
     let id: Int
     let data: [String: String]
 }
+
+#endif
 

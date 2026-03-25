@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct ServiceRecordsView: View {
     let records: [ServiceRecord]
     let specificRecords: [DatabaseService.SpecificRecord]
@@ -89,6 +91,7 @@ struct ServiceRecordsView: View {
                 }
             }
         }
+        .background(DSColors.background)
         .searchable(text: Binding(
             get: { searchText },
             set: { newValue in
@@ -276,7 +279,7 @@ private struct EditableSpecificRecordCell: View {
                     .font(.system(size: 11))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(NSColor.textBackgroundColor))
+                    .background(DSColors.background)
                     .onAppear {
                         // Инициализируем локальное значение при начале редактирования
                         localEditingValue = editingValue ?? value
@@ -299,8 +302,8 @@ private struct EditableSpecificRecordCell: View {
                     .contentShape(Rectangle())
                     .background(
                         isSelected 
-                            ? Color(NSColor.selectedContentBackgroundColor).opacity(0.1)
-                            : Color(NSColor.textBackgroundColor)
+                            ? DSColors.accent.opacity(0.15)
+                            : DSColors.card
                     )
                     .overlay(
                         Rectangle()
@@ -318,11 +321,12 @@ private struct EditableSpecificRecordCell: View {
             }
         }
         .frame(height: 22)
-        .border(Color(NSColor.separatorColor), width: 0.5)
+        .border(Color.white.opacity(0.08), width: 0.5)
         .id("\(recordID)-\(fieldKey)")
     }
 }
 
+#endif
 // Объединенная модель для отображения записей
 private struct RecordDisplayItem: Identifiable {
     let id: Int64

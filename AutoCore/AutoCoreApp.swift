@@ -6,25 +6,20 @@
 //
 
 import SwiftUI
-import AppKit
 import FirebaseCore
+import GoogleSignIn
+
+#if os(macOS)
+import AppKit
 
 @main
 struct AutoCoreApp: App {
-    // Регистрация AppDelegate для инициализации Firebase
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
     @StateObject private var appState: AppState
     
     init() {
-        // КРИТИЧНО: Инициализируем Firebase СИНХРОННО до создания AppState
-        // Это должно быть сделано ПЕРЕД любым использованием FirebaseAuth
-        if FirebaseApp.app() == nil {
-            FirebaseApp.configure()
-            print("🔥 Firebase configured in AutoCoreApp.init()")
-        }
-        
-        // Теперь безопасно создаем AppState (который создаст FirebaseAuthAdapter)
+        // Инициализируем Firebase до создания AppState / сервисов.
+        FirebaseApp.configure()
         _appState = StateObject(wrappedValue: AppState())
     }
 
@@ -36,12 +31,14 @@ struct AutoCoreApp: App {
                     // Используем authState напрямую для реактивности
                     switch authViewModel.authState {
                     case .authenticated:
-                        // Пользователь авторизован - показываем основной UI
-                        if let appViewModel = appState.appViewModel {
+                        if appState.companyId.isEmpty {
+                            OnboardingView(authViewModel: authViewModel)
+                                .id("onboardingView")
+                        } else if let appViewModel = appState.appViewModel {
                             RootView(appViewModel: appViewModel, appState: appState)
                                 .id("rootView")
                         } else {
-                            ContentUnavailableView("Ошибка базы данных", systemImage: "exclamationmark.triangle.fill")
+                            ContentUnavailableView(L10n.App.databaseErrorTitle, systemImage: "exclamationmark.triangle.fill")
                                 .overlay(alignment: .bottom) {
                                     if let message = appState.errorMessage {
                                         Text(message)
@@ -65,19 +62,22 @@ struct AutoCoreApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: appState.authViewModel?.authState)
+            .onOpenURL { url in
+                GIDSignIn.sharedInstance.handle(url)
+            }
         }
         .windowStyle(.automatic)
         .commands {
             // Меню "Правка"
             CommandGroup(replacing: .undoRedo) {
-                Button("Отменить") {
+                Button(L10n.Menu.undo) {
                     if let appViewModel = appState.appViewModel {
                         appViewModel.undoManager.undo()
                     }
                 }
                 .keyboardShortcut("z", modifiers: .command)
-                
-                Button("Повторить") {
+
+                Button(L10n.Menu.redo) {
                     if let appViewModel = appState.appViewModel {
                         appViewModel.undoManager.redo()
                     }
@@ -87,26 +87,25 @@ struct AutoCoreApp: App {
             
             // Меню "Файл"
             CommandGroup(replacing: .newItem) {
-                Button("Новый мотор") {
+                Button(L10n.Menu.newMotor) {
                     if appState.appViewModel != nil {
-                        // Открываем окно добавления мотора
                         NotificationCenter.default.post(name: NSNotification.Name("OpenAddMotor"), object: nil)
                     }
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
-            
+
             CommandGroup(after: .newItem) {
                 Divider()
-                
-                Button("Импорт Excel") {
+
+                Button(L10n.Menu.importExcel) {
                     if appState.appViewModel != nil {
                         NotificationCenter.default.post(name: NSNotification.Name("OpenImport"), object: nil)
                     }
                 }
                 .keyboardShortcut("i", modifiers: .command)
-                
-                Button("Экспорт Excel") {
+
+                Button(L10n.Menu.exportExcel) {
                     if appState.appViewModel != nil {
                         NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
                     }
@@ -118,39 +117,38 @@ struct AutoCoreApp: App {
             CommandGroup(after: .toolbar) {
                 Divider()
                 
-                Button("Панель тестировщика") {
+                Button(L10n.Menu.testerPanel) {
                     openTesterWindow()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             }
-            
-            // Меню "Моторы"
-            CommandMenu("Моторы") {
-                Button("Добавить мотор") {
+
+            CommandMenu(L10n.Menu.motorsMenu) {
+                Button(L10n.Menu.addMotor) {
                     NotificationCenter.default.post(name: NSNotification.Name("OpenAddMotor"), object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
-                
+
                 Divider()
-                
-                Button("Пометить как проданный") {
+
+                Button(L10n.Menu.markSold) {
                     NotificationCenter.default.post(name: NSNotification.Name("SellMotor"), object: nil)
                 }
                 .keyboardShortcut("s", modifiers: .command)
-                
-                Button("Дублировать") {
+
+                Button(L10n.Menu.duplicate) {
                     NotificationCenter.default.post(name: NSNotification.Name("DuplicateMotor"), object: nil)
                 }
                 .keyboardShortcut("d", modifiers: .command)
-                
+
                 Divider()
-                
-                Button("Импорт из Excel") {
+
+                Button(L10n.Menu.importFromExcel) {
                     NotificationCenter.default.post(name: NSNotification.Name("OpenImport"), object: nil)
                 }
                 .keyboardShortcut("i", modifiers: .command)
-                
-                Button("Экспорт в Excel") {
+
+                Button(L10n.Menu.exportToExcel) {
                     NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
                 }
                 .keyboardShortcut("e", modifiers: .command)
@@ -161,34 +159,13 @@ struct AutoCoreApp: App {
     
     private func openTesterWindow() {
         guard let appViewModel = appState.appViewModel else { return }
-        
-        // Ищем окно среди открытых окон приложения
-        for window in NSApplication.shared.windows {
-            if window.title == "Панель тестировщика" {
-                window.makeKeyAndOrderFront(nil)
-                return
-            }
-        }
-        
-        // Создаем новое окно
-        let viewModel = TesterViewModel(database: appViewModel.database) {
-            appViewModel.refreshAll()
-        }
-        let contentView = TesterWindowView(viewModel: viewModel)
-        
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 500, height: 600)
-        
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+        appDelegate.presentTesterPanel(
+            database: appViewModel.database,
+            companyId: appState.companyId,
+            onDataChanged: { appViewModel.refreshAll() }
         )
-        window.contentView = hostingView
-        window.title = "Панель тестировщика"
-        window.center()
-        window.makeKeyAndOrderFront(nil)
     }
 }
+
+#endif
 

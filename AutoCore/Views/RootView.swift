@@ -33,7 +33,10 @@ struct RootView: View {
     init(appViewModel: AppViewModel, appState: AppState) {
         self.appViewModel = appViewModel
         self.appState = appState
-        _importViewModel = StateObject(wrappedValue: ImportViewModel(database: appViewModel.database))
+        _importViewModel = StateObject(wrappedValue: ImportViewModel(
+            database: appViewModel.database,
+            companyId: appState.authViewModel?.currentUser?.companyId ?? "default"
+        ))
     }
 
     var body: some View {
@@ -48,13 +51,35 @@ struct RootView: View {
             .navigationTitle("AutoCore")
             .toolbar {
                 Group {
-                    if appViewModel.selectedSection != .accounting {
+                    if appViewModel.selectedSection != .accounting && appViewModel.selectedSection != .warehouse {
                         toolbarContent
                     }
                 }
             }
             .onAppear {
                 setupKeyboardShortcuts()
+                guard let user = appState.authViewModel?.currentUser else { return }
+                let companyId = user.companyId.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !companyId.isEmpty {
+                    appViewModel.setCompanyId(companyId)
+                    importViewModel.companyId = companyId
+                    appViewModel.refreshAll()
+                    Task {
+                        await appState.authViewModel?.syncCompanyIdToFirestoreIfNeeded(companyId: companyId)
+                    }
+                } else {
+                    // Пользователь без companyId — создаём default и привязываем (иначе Firestore rules блокируют push)
+                    Task {
+                        let companyService = FirestoreCompanyService()
+                        try? await companyService.ensureDefaultCompany(ownerId: user.id)
+                        await appState.authViewModel?.refreshCurrentUser()
+                        await MainActor.run {
+                            appViewModel.setCompanyId("default")
+                            importViewModel.companyId = "default"
+                            appViewModel.refreshAll()
+                        }
+                    }
+                }
             }
             .background(WindowAccessor(window: $hostWindow))
             .modifier(AlertsAndSheetsModifier(
@@ -100,7 +125,8 @@ struct RootView: View {
                                 cashReceived: cashReceived,
                                 account: account,
                                 comment: comment,
-                                currentUser: currentUser.email
+                                currentUser: currentUser.email,
+                                companyId: currentUser.companyId
                             )
                         },
                         onCancel: {
@@ -123,7 +149,8 @@ struct RootView: View {
                                 cashReceived: cashReceived,
                                 account: account,
                                 comment: comment,
-                                currentUser: currentUser.email
+                                currentUser: currentUser.email,
+                                companyId: currentUser.companyId
                             )
                         },
                         onCancel: {
@@ -158,7 +185,7 @@ struct RootView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UpdateError"))) { notification in
                 if let errorMessage = notification.object as? String {
-                    showAlert("Ошибка при обновлении: \(errorMessage)")
+                    showAlert(L10n.Root.updateError(errorMessage))
                 }
             }
             .sheet(isPresented: $isShowingSettings) {
@@ -174,21 +201,21 @@ struct RootView: View {
                     )
                 }
             }
-            .alert("Добавить заметку к \(batchNoteMotorIDs.count) моторов", isPresented: $isShowingBatchAddNote) {
-                TextField("Текст заметки", text: $batchNoteText, axis: .vertical)
+            .alert(L10n.Root.batchNoteTitle(batchNoteMotorIDs.count), isPresented: $isShowingBatchAddNote) {
+                TextField(L10n.Root.batchNotePlaceholder, text: $batchNoteText, axis: .vertical)
                     .lineLimit(3...10)
-                Button("Отмена", role: .cancel) {
+                Button(L10n.Common.cancel, role: .cancel) {
                     batchNoteText = ""
                     batchNoteMotorIDs = []
                 }
-                Button("Добавить") {
+                Button(L10n.Common.add) {
                     appViewModel.batchAddNote(motorIDs: batchNoteMotorIDs, note: batchNoteText, append: true)
                     batchNoteText = ""
                     batchNoteMotorIDs = []
                 }
                 .disabled(batchNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } message: {
-                Text("Заметка будет добавлена к существующим заметкам выбранных моторов")
+                Text(L10n.Root.batchNoteMessage)
             }
             .sheet(isPresented: $isShowingUpdateSuccess) {
                 if let version = updateService.successVersion {
@@ -216,7 +243,7 @@ struct RootView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.orange)
-            Text("Режим восстановления")
+            Text(L10n.Root.recoveryMode)
                 .font(.headline)
             Spacer()
             if let message = recoveryState.recoveryMessage {
@@ -309,15 +336,33 @@ struct RootView: View {
             switch appViewModel.selectedSection {
             case .accounting:
                 AccountingView(
-                    financialOperationRepository: FinancialOperationRepositoryImpl(database: appViewModel.database),
-                    currentUser: appState.authViewModel?.currentUser?.email ?? appState.authViewModel?.currentUser?.displayName ?? "Система",
+                    financialOperationRepository: FinancialOperationRepositoryImpl(
+                        database: appViewModel.database,
+                        companyId: appState.authViewModel?.currentUser?.companyId ?? "default"
+                    ),
+                    currentUser: appState.authViewModel?.currentUser?.email ?? appState.authViewModel?.currentUser?.displayName ?? L10n.Common.systemUser,
                     recoveryState: appState.recoveryState,
                     onSettings: { isShowingSettings = true },
                     onLogout: appState.authViewModel != nil ? {
                         appState.authViewModel?.signOut()
                     } : nil,
-                    userEntity: appState.authViewModel?.currentUser
+                    userEntity: appState.authViewModel?.currentUser,
+                    database: appViewModel.database,
+                    companyId: appState.authViewModel?.currentUser?.companyId ?? "default"
                 )
+                .id((appState.authViewModel?.currentUser?.companyId ?? "").isEmpty ? "pending" : (appState.authViewModel?.currentUser?.companyId ?? "default"))
+            case .warehouse:
+                if let companyId = appState.authViewModel?.currentUser?.companyId, !companyId.isEmpty {
+                    WarehouseView(companyId: companyId)
+                } else {
+                    EmptyStateView(
+                        icon: "shippingbox",
+                        title: L10n.Root.warehouseUnavailableTitle,
+                        message: L10n.Root.warehouseUnavailableMessage,
+                        actionTitle: nil,
+                        action: nil
+                    )
+                }
             case .sold:
                 SoldMotorsView(
                     motors: appViewModel.soldMotors,
@@ -356,8 +401,8 @@ struct RootView: View {
                 } else {
                     EmptyStateView(
                         icon: "doc.text.magnifyingglass",
-                        title: "Категория не найдена",
-                        message: "Категория была удалена или не существует",
+                        title: L10n.Root.categoryNotFoundTitle,
+                        message: L10n.Root.categoryNotFoundMessage,
                         actionTitle: nil,
                         action: nil
                     )
@@ -409,12 +454,12 @@ struct RootView: View {
         // КАНОНИЧЕСКИЙ способ для SwiftUI: используем окно из WindowAccessor
         guard let window = hostWindow else {
             assertionFailure("Нет окна для показа Open Panel. WindowAccessor должен быть установлен.")
-            showAlert("Не удалось найти окно приложения")
+            showAlert(L10n.Root.windowNotFound)
             return
         }
-        
+
         let panel = NSOpenPanel()
-        panel.title = "Выберите Excel файл"
+        panel.title = L10n.Root.chooseExcelFile
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -446,45 +491,45 @@ struct RootView: View {
         // Показываем Save Panel после подтверждения настроек
         guard let window = hostWindow ?? NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first(where: { $0.isVisible && $0.isKeyWindow }) else {
             assertionFailure("Нет окна для показа Save Panel")
-            showAlert("Не удалось найти окно приложения")
+            showAlert(L10n.Root.windowNotFound)
             return
         }
-        
+
         Task { @MainActor in
             let panel = NSSavePanel()
-            
-            panel.title = "Экспорт Excel"
+
+            panel.title = L10n.Root.exportExcel
             panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
             panel.nameFieldStringValue = "autocore.xlsx"
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false
-            
+
             panel.beginSheetModal(for: window) { response in
                 guard response == .OK, let url = panel.url else {
                     return
                 }
-                
+
                 Task { @MainActor in
                     await self.handleExportWithSettings(url: url, settings: settings)
                 }
             }
         }
     }
-    
+
     @MainActor
     private func performExport(selectedSpecificSheetIDs: Set<Int64>?) {
         // КАНОНИЧЕСКИЙ способ для SwiftUI: используем окно из WindowAccessor или fallback
         guard let window = hostWindow ?? NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first(where: { $0.isVisible && $0.isKeyWindow }) else {
             assertionFailure("Нет окна для показа Save Panel. WindowAccessor должен быть установлен.")
-            showAlert("Не удалось найти окно приложения")
+            showAlert(L10n.Root.windowNotFound)
             return
         }
-        
+
         // Создаем панель на главном потоке
         Task { @MainActor in
             let panel = NSSavePanel()
-            
-            panel.title = "Экспорт Excel"
+
+            panel.title = L10n.Root.exportExcel
             panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
             panel.nameFieldStringValue = "autocore.xlsx"
             panel.canCreateDirectories = true
@@ -543,7 +588,7 @@ struct RootView: View {
             """
             showAlert(message)
         } catch {
-            showAlert("Ошибка экспорта: \(error.localizedDescription)")
+            showAlert(L10n.Root.exportError(error.localizedDescription))
         }
         
         appViewModel.isLoading = false
@@ -568,7 +613,7 @@ struct RootView: View {
             }.value
             
             if allMotors.isEmpty && engines.isEmpty {
-                showAlert("Нет данных для экспорта")
+                showAlert(L10n.Root.noDataToExport)
                 appViewModel.isLoading = false
                 return
             }
@@ -593,7 +638,7 @@ struct RootView: View {
             """
             showAlert(message)
         } catch {
-            showAlert("Ошибка экспорта: \(error.localizedDescription)")
+            showAlert(L10n.Root.exportError(error.localizedDescription))
         }
         
         appViewModel.isLoading = false
@@ -633,7 +678,7 @@ struct RootView: View {
                 appViewModel.refreshAll()
                 newCategoryName = ""
             } catch {
-                showAlert("Ошибка создания категории: \(error.localizedDescription)")
+                showAlert(L10n.Root.createCategoryError(error.localizedDescription))
             }
         }
     }
@@ -641,12 +686,12 @@ struct RootView: View {
     func duplicateMotor(_ motor: Motor) {
         // Находим engine по motor.engineID
         guard let engine = appViewModel.engines.first(where: { $0.id == motor.engineID }) else {
-            showAlert("Не удалось найти двигатель для дублирования")
+            showAlert(L10n.Root.engineNotFoundDuplicate)
             return
         }
         
         guard let brand = appViewModel.brands.first(where: { $0.id == engine.brandID }) else {
-            showAlert("Не удалось найти бренд для дублирования")
+            showAlert(L10n.Root.brandNotFoundDuplicate)
             return
         }
         
@@ -662,19 +707,19 @@ struct RootView: View {
             soldDate: nil // Дубликат всегда в наличии
         )
         
-        showAlert("Мотор успешно продублирован")
+        showAlert(L10n.Root.motorDuplicated)
     }
     
     func exportSelectedMotor(_ motor: Motor) {
         // Экспорт одного мотора в отдельный файл
         Task { @MainActor in
             guard let window = hostWindow ?? NSApplication.shared.keyWindow else {
-                showAlert("Не удалось найти окно приложения")
+                showAlert(L10n.Root.windowNotFound)
                 return
             }
             
             let panel = NSSavePanel()
-            panel.title = "Экспорт мотора"
+            panel.title = L10n.Root.exportSingleMotorTitle
             panel.allowedContentTypes = [UTType(filenameExtension: "xlsx")].compactMap { $0 }
             panel.nameFieldStringValue = "motor_\(motor.serialCode).xlsx"
             panel.canCreateDirectories = true
@@ -688,7 +733,7 @@ struct RootView: View {
                         let exportService = ExcelExportService()
                         // Для экспорта одного мотора можно создать отдельный метод
                         // Пока просто показываем сообщение
-                        showAlert("Экспорт одного мотора будет реализован в следующей версии")
+                        showAlert(L10n.Root.exportSingleMotorPlaceholder)
                     }
                 }
             }

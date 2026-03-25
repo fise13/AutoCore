@@ -155,24 +155,15 @@ final class BackupService: ObservableObject {
         let correlationID = UUIDv7.generateString()
         logger.info("Restoring from backup: \(backup.path)", correlationID: correlationID)
         
-        // Закрываем текущую БД
-        // Восстановление требует перезапуска приложения
         let fileManager = FileManager.default
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.sqlite")
-        
-        // Создаем резервную копию текущей БД
+        let dbPath = database.databaseFileURL
+        database.closeForTeardown()
+
         if fileManager.fileExists(atPath: dbPath.path) {
             let backupCurrentPath = dbPath.path + ".backup_\(Int(Date().timeIntervalSince1970))"
             try fileManager.copyItem(atPath: dbPath.path, toPath: backupCurrentPath)
         }
-        
-        // Копируем бэкап
+
         try fileManager.copyItem(atPath: backup.path, toPath: dbPath.path)
         
         logger.info("Backup restored successfully", correlationID: correlationID)

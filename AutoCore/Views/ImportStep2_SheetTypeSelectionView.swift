@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 // MARK: - Step 2: Sheet Type Selection
 
 struct ImportStep2_SheetTypeSelectionView: View {
@@ -201,3 +203,5 @@ private struct SheetTypeSelectionRow: View {
         .cornerRadius(8)
     }
 }
+
+#endif

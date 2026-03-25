@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 /// Оптимизированная таблица моторов - производительность уровня Finder/Excel
 struct MotorListViewOptimized: View {
@@ -65,7 +69,7 @@ struct MotorListViewOptimized: View {
     }
     
     private let rowHeight: CGFloat = 24
-    private let gridLineColor = Color(NSColor.separatorColor)
+    private var gridLineColor: Color { Platform.separatorColor }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -126,7 +130,7 @@ struct MotorListViewOptimized: View {
             .buttonStyle(.bordered)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Platform.controlBackgroundColor)
     }
     
     private var spreadsheetGrid: some View {
@@ -152,14 +156,14 @@ struct MotorListViewOptimized: View {
                 }
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(Platform.textBackgroundColor)
     }
     
     private var headerRow: some View {
         HStack(spacing: 0) {
             // Row header (пустая ячейка)
             Rectangle()
-                .fill(Color(NSColor.windowBackgroundColor))
+                .fill(Platform.windowBackgroundColor)
                 .frame(width: 40, height: rowHeight)
                 .overlay(
                     Rectangle()
@@ -171,7 +175,7 @@ struct MotorListViewOptimized: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: column.width, height: rowHeight, alignment: .center)
-                    .background(Color(NSColor.windowBackgroundColor))
+                    .background(Platform.windowBackgroundColor)
                     .overlay(
                         Rectangle()
                             .stroke(gridLineColor, lineWidth: 0.5)
@@ -188,14 +192,14 @@ struct MotorListViewOptimized: View {
             Spacer()
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Platform.controlBackgroundColor)
     }
     
     // MARK: - Selection Logic
     
     private func handleSelection(motorID: Int64) {
+        #if os(macOS)
         let flags = NSEvent.modifierFlags
-        
         if flags.contains(.command) {
             // ⌘ — добавление/удаление из множества
             if selectedMotorIDs.contains(motorID) {
@@ -216,6 +220,10 @@ struct MotorListViewOptimized: View {
             selectedMotorIDs = [motorID]
             lastSelectedMotorIDForRange = motorID
         }
+        #else
+        selectedMotorIDs = [motorID]
+        lastSelectedMotorIDForRange = motorID
+        #endif
     }
     
 }
@@ -248,7 +256,7 @@ struct MotorRowView: View {
                 }
             }
         }
-        .background(isSelected ? Color(NSColor.controlAccentColor).opacity(0.1) : Color.clear)
+        .background(isSelected ? Platform.controlAccentColor.opacity(0.1) : Color.clear)
     }
     
     private var rowHeaderCell: some View {
@@ -256,7 +264,7 @@ struct MotorRowView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .frame(width: 40, height: rowHeight, alignment: .trailing)
-            .background(Color(NSColor.windowBackgroundColor))
+            .background(Platform.windowBackgroundColor)
             .overlay(
                 Rectangle()
                     .stroke(gridLineColor, lineWidth: 0.5)

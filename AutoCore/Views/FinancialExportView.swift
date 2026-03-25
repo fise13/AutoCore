@@ -25,7 +25,11 @@ struct FinancialExportView: View {
                         Text("Excel (.xlsx)").tag(FinancialExportConfig.ExportFormat.excel)
                         Text("PDF (.pdf)").tag(FinancialExportConfig.ExportFormat.pdf)
                     }
+                    #if os(macOS)
                     .pickerStyle(.radioGroup)
+                    #else
+                    .pickerStyle(.menu)
+                    #endif
                     .onChange(of: selectedFormat) { _, newValue in
                         config.format = newValue
                     }

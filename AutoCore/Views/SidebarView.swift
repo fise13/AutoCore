@@ -61,6 +61,18 @@ struct SidebarView: View {
                                 }
                             }
                         )
+
+                        SidebarButton(
+                            title: NavigationSection.warehouse.title,
+                            icon: "shippingbox.fill",
+                            isSelected: selectedSection.id == NavigationSection.warehouse.id,
+                            hoveredItem: $hoveredItem,
+                            action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    onSectionChange(.warehouse)
+                                }
+                            }
+                        )
                     }
                     .padding(.top, 12)
                     .padding(.horizontal, 8)

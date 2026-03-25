@@ -10,6 +10,7 @@ enum NavigationSection: Identifiable, Hashable {
     case sold
     case specificCategory(categoryID: Int64)
     case accounting
+    case warehouse
     
     var id: String {
         switch self {
@@ -21,19 +22,23 @@ enum NavigationSection: Identifiable, Hashable {
             return "category_\(categoryID)"
         case .accounting:
             return "accounting"
+        case .warehouse:
+            return "warehouse"
         }
     }
     
     var title: String {
         switch self {
         case .all:
-            return "Все моторы"
+            return L10n.Navigation.allMotors
         case .sold:
-            return "Проданные"
+            return L10n.Navigation.sold
         case .specificCategory:
-            return "" // Будет заполнено из категории
+            return ""
         case .accounting:
-            return "Бухгалтерия"
+            return L10n.Navigation.accounting
+        case .warehouse:
+            return L10n.Navigation.warehouse
         }
     }
     
@@ -230,15 +235,24 @@ final class AppViewModel: ObservableObject {
     }
 
     @Published private(set) var recoveryState: RecoveryState?
+    @Published var companyId: String = "default"
     private let motorRepository: MotorRepository
+    private let firestoreCatalogSync = FirestoreCatalogSyncService()
     
     init(database: DatabaseService, recoveryState: RecoveryState? = nil) {
         self.database = database
         self.recoveryState = recoveryState
-        self.motorRepository = MotorRepositoryImpl(database: database)
+        self.motorRepository = MotorRepositoryImpl(database: database, companyId: "default")
         undoManager.groupsByEvent = true
         observeFilters()
         refreshAll()
+    }
+
+    func setCompanyId(_ value: String) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        companyId = normalized
+        motorRepository.setCompanyId(normalized)
     }
 
     func refreshAll() {
@@ -250,20 +264,22 @@ final class AppViewModel: ObservableObject {
             hasMoreSoldPages = true
         }
         
-        // Загружаем ВСЕ моторы без фильтрации для allMotors
-        let allFilter = DatabaseService.MotorFilter(availability: .all)
-        let soldFilter = DatabaseService.MotorFilter(availability: .sold)
+        let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
+        var allFilter = DatabaseService.MotorFilter(availability: .all)
+        allFilter.companyId = effectiveCompanyId
+        var soldFilter = DatabaseService.MotorFilter(availability: .sold)
+        soldFilter.companyId = effectiveCompanyId
         
         // Capture database before Task.detached to avoid main actor isolation warnings
         let database = self.database
         let pageSize = self.pageSize
+        let companyId = self.companyId
         
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 let brands = try database.fetchBrands()
                 let engines = try database.fetchEngines(brandID: nil)
-                // Загружаем все моторы без фильтрации (для allMotors)
                 let allMotors = try database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
                 let totalCount = allMotors.count
                 let totalSoldCount = try database.countMotors(filter: soldFilter)
@@ -274,6 +290,7 @@ final class AppViewModel: ObservableObject {
                 var prices: [Int64: Decimal] = [:]
                 
                 if !motorIDs.isEmpty {
+                    let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
                     let financialFilter = DatabaseService.FinancialOperationFilter(
                         type: .sale,
                         account: nil,
@@ -281,7 +298,8 @@ final class AppViewModel: ObservableObject {
                         fromDate: nil,
                         toDate: nil,
                         limit: nil,
-                        offset: nil
+                        offset: nil,
+                        companyId: effectiveCompanyId
                     )
                     let operations = try database.fetchFinancialOperations(filter: financialFilter)
                     
@@ -318,6 +336,13 @@ final class AppViewModel: ObservableObject {
                     self.setHasMorePages(false) // Все загружены в память
                     self.setHasMoreSoldPages(soldMotors.count >= self.pageSize)
                 }
+
+                await self.firestoreCatalogSync.pushSnapshot(
+                    companyId: companyId,
+                    brands: brands,
+                    engines: engines,
+                    motors: allMotors
+                )
             } catch {
                 await MainActor.run { [weak self] in
                     self?.setError("Ошибка базы данных: \(error.localizedDescription)")
@@ -325,7 +350,7 @@ final class AppViewModel: ObservableObject {
             }
         }
     }
-    
+
     func refreshSoldMotors() {
         Task { @MainActor in
             currentSoldPage = 0
@@ -335,11 +360,13 @@ final class AppViewModel: ObservableObject {
         let searchText = soldSearchText
         let database = self.database
         let pageSize = self.pageSize
+        let companyId = self.companyId
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                // Загружаем проданные моторы
-                let soldFilter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
+                let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
+                var soldFilter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
+                soldFilter.companyId = effectiveCompanyId
                 let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 let totalCount = try database.countMotors(filter: soldFilter)
                 
@@ -348,6 +375,7 @@ final class AppViewModel: ObservableObject {
                 var prices: [Int64: Decimal] = [:]
                 
                 if !motorIDs.isEmpty {
+                    let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
                     let financialFilter = DatabaseService.FinancialOperationFilter(
                         type: .sale,
                         account: nil,
@@ -355,7 +383,8 @@ final class AppViewModel: ObservableObject {
                         fromDate: nil,
                         toDate: nil,
                         limit: nil,
-                        offset: nil
+                        offset: nil,
+                        companyId: effectiveCompanyId
                     )
                     let operations = try database.fetchFinancialOperations(filter: financialFilter)
                     
@@ -391,10 +420,13 @@ final class AppViewModel: ObservableObject {
         let searchText = soldSearchText
         let database = self.database
         let pageSize = self.pageSize
+        let companyId = self.companyId
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let filter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
+                let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
+                var filter = DatabaseService.MotorFilter(searchText: searchText, availability: .sold)
+                filter.companyId = effectiveCompanyId
                 let offset = page * pageSize
                 let newMotors = try database.fetchMotors(filter: filter, limit: pageSize, offset: offset)
                 
@@ -410,7 +442,8 @@ final class AppViewModel: ObservableObject {
                         fromDate: nil,
                         toDate: nil,
                         limit: nil,
-                        offset: nil
+                        offset: nil,
+                        companyId: effectiveCompanyId
                     )
                     let operations = try database.fetchFinancialOperations(filter: financialFilter)
                     
@@ -491,6 +524,7 @@ final class AppViewModel: ObservableObject {
         soldDate: Date?
     ) {
         let database = self.database
+        let companyId = self.companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : self.companyId
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -507,7 +541,8 @@ final class AppViewModel: ObservableObject {
                     quantity: quantity,
                     transmission: transmission,
                     arrivalDate: arrivalDate,
-                    soldDate: soldDate
+                    soldDate: soldDate,
+                    companyId: companyId
                 )
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -769,7 +804,8 @@ final class AppViewModel: ObservableObject {
         cashReceived: Decimal?,
         account: FinancialOperationEntity.Account,
         comment: String,
-        currentUser: String
+        currentUser: String,
+        companyId: String
     ) {
         let database = self.database
         let motorRepository = self.motorRepository
@@ -782,7 +818,8 @@ final class AppViewModel: ObservableObject {
                     database: database,
                     motorRepository: motorRepository,
                     recoveryState: recoveryState,
-                    currentUser: currentUser
+                    currentUser: currentUser,
+                    companyId: companyId
                 )
                 
                 let result = try await useCase.execute(
@@ -832,7 +869,8 @@ final class AppViewModel: ObservableObject {
         cashReceived: Decimal?,
         account: FinancialOperationEntity.Account,
         comment: String,
-        currentUser: String
+        currentUser: String,
+        companyId: String
     ) {
         let database = self.database
         let motorRepository = self.motorRepository
@@ -845,7 +883,8 @@ final class AppViewModel: ObservableObject {
                     database: database,
                     motorRepository: motorRepository,
                     recoveryState: recoveryState,
-                    currentUser: currentUser
+                    currentUser: currentUser,
+                    companyId: companyId
                 )
                 
                 let result = try await useCase.execute(

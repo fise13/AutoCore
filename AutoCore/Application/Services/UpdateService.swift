@@ -1,7 +1,9 @@
 import Foundation
-import AppKit
 import OSLog
 import Combine
+
+#if os(macOS)
+import AppKit
 
 /// Update Service
 /// Проверяет наличие обновлений через latest.json
@@ -447,3 +449,5 @@ enum UpdateError: LocalizedError {
         }
     }
 }
+
+#endif

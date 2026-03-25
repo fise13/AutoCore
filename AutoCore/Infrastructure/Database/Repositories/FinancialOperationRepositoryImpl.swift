@@ -3,9 +3,17 @@ import Foundation
 /// Infrastructure implementation of FinancialOperationRepository
 final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
     private let database: DatabaseService
+    private let financialSync: FinancialSyncService?
+    private let companyId: String
     
-    init(database: DatabaseService) {
+    init(
+        database: DatabaseService,
+        companyId: String = "default",
+        financialSync: FinancialSyncService? = nil
+    ) {
         self.database = database
+        self.companyId = companyId
+        self.financialSync = financialSync ?? FirestoreFinancialSyncService()
     }
     
     func save(_ operation: FinancialOperationEntity) throws -> FinancialOperationEntity {
@@ -27,21 +35,36 @@ final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
                 source: operation.source,
                 details: operation.details,
                 category: operation.category,
-                description: operation.description
+                description: operation.description,
+                companyId: companyId
             )
         } else {
             // Операции нельзя редактировать - только создавать
             throw AppError.validationError(message: "Финансовые операции нельзя редактировать")
         }
         
-        return try findByID(operationID) ?? operation
+        let saved = try findByID(operationID) ?? operation
+        
+        // Асинхронный пуш в Firestore (если сервис доступен и companyId задан)
+        if let financialSync = financialSync, !companyId.isEmpty {
+            Task { @MainActor in
+                do {
+                    _ = try await financialSync.pushOperation(saved, companyId: companyId)
+                } catch {
+                    LoggingService.shared.error("Firestore PUSH error in FinancialOperationRepositoryImpl.save", error: error)
+                }
+            }
+        }
+        
+        return saved
     }
     
     func findByID(_ id: Int64) throws -> FinancialOperationEntity? {
-        guard let dbOperation = try database.fetchFinancialOperation(id: id) else {
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : companyId
+        guard let dbOperation = try database.fetchFinancialOperation(id: id, companyId: cid) else {
             return nil
         }
-        
+
         return try mapToEntity(dbOperation)
     }
     
@@ -54,13 +77,16 @@ final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
         dbFilter.toDate = filter.toDate
         dbFilter.limit = filter.limit
         dbFilter.offset = filter.offset
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
+        dbFilter.companyId = cid
         
         let operations = try database.fetchFinancialOperations(filter: dbFilter)
         return try operations.map { try mapToEntity($0) }
     }
     
     func calculateCashBalance(account: FinancialOperationEntity.Account, upToDate: Date?) throws -> Decimal {
-        return try database.calculateCashBalance(account: account.rawValue, upToDate: upToDate)
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : companyId
+        return try database.calculateCashBalance(account: account.rawValue, upToDate: upToDate, companyId: cid)
     }
     
     private func mapToEntity(_ operation: DatabaseService.FinancialOperation) throws -> FinancialOperationEntity {

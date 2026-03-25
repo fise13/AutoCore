@@ -23,11 +23,14 @@ final class ImportViewModel: ObservableObject {
     @Published var currentSheetConfigID: UUID?
     
     let database: DatabaseService
+    /// Текущая компания для привязки импортируемых моторов.
+    var companyId: String = "default"
     private let importService = ExcelImportService()
     private var rawSheetData: [ImportSheetData] = []
     
-    init(database: DatabaseService) {
+    init(database: DatabaseService, companyId: String = "default") {
         self.database = database
+        self.companyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
     }
     
     func load(url: URL) {
@@ -523,6 +526,7 @@ final class ImportViewModel: ObservableObject {
         let configs = await MainActor.run { sheetConfigs }
         let mappings = await MainActor.run { columnMappings }
         let rawData = await MainActor.run { rawSheetData }
+        let companyId = await MainActor.run { self.companyId }
         
         return try await Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { throw ImportError.cancelled }
@@ -546,7 +550,8 @@ final class ImportViewModel: ObservableObject {
                                 config: config,
                                 sheetData: sheetData,
                                 mapping: mapping,
-                                database: database
+                                database: database,
+                                companyId: companyId
                             )
                             imported += count
                         case .specific:
@@ -596,12 +601,11 @@ final class ImportViewModel: ObservableObject {
         config: SheetImportConfig,
         sheetData: ImportSheetData,
         mapping: SheetColumnMapping,
-        database: DatabaseService
+        database: DatabaseService,
+        companyId: String = "default"
     ) throws -> Int {
-        // Строим строки на основе маппинга
         let rows = buildEngineRows(for: sheetData, mapping: mapping)
         
-        // Получаем brandID и engineID
         let brandID: Int64
         if let selectedID = config.selectedBrandID {
             brandID = selectedID
@@ -613,6 +617,7 @@ final class ImportViewModel: ObservableObject {
         
         guard let engineCode = config.effectiveEngineCode else { return 0 }
         let engineID = try database.upsertEngineUnlocked(brandID: brandID, code: engineCode)
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         
         var imported = 0
         for row in rows {
@@ -624,7 +629,8 @@ final class ImportViewModel: ObservableObject {
                 quantity: row.quantity,
                 transmission: row.transmission,
                 arrivalDate: row.arrivalDate ?? Date(),
-                soldDate: row.soldDate
+                soldDate: row.soldDate,
+                companyId: cid
             )
             imported += 1
         }

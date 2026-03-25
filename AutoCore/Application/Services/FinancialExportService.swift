@@ -1,8 +1,10 @@
 import Foundation
 import ZIPFoundation
+#if os(macOS)
 import PDFKit
 import AppKit
 import CoreText
+#endif
 
 /// Сервис экспорта финансовых операций в Excel и PDF
 final class FinancialExportService {
@@ -132,6 +134,7 @@ final class FinancialExportService {
     }
     
     /// Экспорт в PDF
+    #if os(macOS)
     func exportToPDF(config: FinancialExportConfig, to url: URL) throws -> URL {
         try config.validate()
         
@@ -205,6 +208,11 @@ final class FinancialExportService {
         
         return url
     }
+    #else
+    func exportToPDF(config: FinancialExportConfig, to url: URL) throws -> URL {
+        throw FinancialExportError.exportFailed(message: "Экспорт в PDF доступен только на macOS")
+    }
+    #endif
     
     // MARK: - Data Loading
     
@@ -646,6 +654,7 @@ final class FinancialExportService {
     }
     
     // MARK: - PDF Building
+    #if os(macOS)
     
     private func buildSummaryPDFPage(
         operations: [FinancialOperationEntity],
@@ -831,6 +840,8 @@ final class FinancialExportService {
         let pdfDocument = PDFDocument(data: pdfData as Data)
         return pdfDocument!.page(at: 0)!
     }
+    
+    #endif
     
     // MARK: - Helpers
     

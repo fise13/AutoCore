@@ -1,5 +1,8 @@
 import SwiftUI
 import Combine
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 final class AppState: ObservableObject {
@@ -10,58 +13,85 @@ final class AppState: ObservableObject {
     @Published var backupService: BackupService?
     @Published var settingsService: SettingsService?
     @Published var authViewModel: AuthViewModel?
-    
+
     private var cancellables = Set<AnyCancellable>()
-    
+    /// Firebase UID для которого открыта локальная SQLite (если есть).
+    private var boundUserId: String?
+
+    /// Текущий companyId для текущего пользователя (если есть).
+    var companyId: String {
+        if let user = authViewModel?.currentUser {
+            return user.companyId
+        }
+        return ""
+    }
+
     init(authService: AuthService? = nil) {
-        // Инициализируем AuthService и AuthViewModel сразу
-        // Firebase уже инициализирован в AppDelegate при старте приложения
-        let authService = authService ?? FirebaseAuthAdapter()
+        let authService = authService ?? FirebaseAuthService()
         self.authViewModel = AuthViewModel(authService: authService)
-        
-        // Подписываемся на изменения authState для принудительного обновления UI
+
         authViewModel?.$authState
-            .sink { [weak self] _ in
-                // Принудительно обновляем AppState для триггера обновления UI
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
                 self?.objectWillChange.send()
+                self?.handleAuthStateChange(state)
             }
             .store(in: &cancellables)
-        
-        do {
-            let database = try DatabaseService()
-            
-            // Инициализируем Feature Flag Service
-            featureFlagService = FeatureFlagService(database: database)
-            
-            // Инициализируем Backup Service
-            backupService = BackupService(database: database)
-            
-            // Инициализируем Settings Service
-            let settingsRepository = SQLiteSettingsRepository(database: database)
-            settingsService = SettingsService(repository: settingsRepository)
-            
-            // Проверяем, открыта ли БД в read-only режиме
-            if database.isReadOnly {
-                recoveryState.enable(reason: .databaseValidationFailed(
-                    "База данных открыта в режиме только для чтения из-за ошибок доступа"
-                ))
-            }
-            
-            appViewModel = AppViewModel(database: database, recoveryState: recoveryState)
-        } catch {
-            // При ошибке открытия БД пытаемся открыть в read-only режиме
+    }
+
+    private func handleAuthStateChange(_ state: AuthState) {
+        switch state {
+        case .unauthenticated:
+            boundUserId = nil
+            tearDownDatabaseStack()
+            #if os(iOS)
+            WidgetDataStore.clear()
+            #endif
+        case .authenticating:
+            break
+        case .authenticated(let user):
+            if boundUserId == user.id { return }
+            tearDownDatabaseStack()
+            boundUserId = user.id
+            errorMessage = nil
             do {
-                let database = try DatabaseService(readOnly: true)
-                featureFlagService = FeatureFlagService(database: database)
-                backupService = BackupService(database: database)
-                let settingsRepository = SQLiteSettingsRepository(database: database)
-                settingsService = SettingsService(repository: settingsRepository)
-                recoveryState.enable(reason: .databaseOpenFailed(error.localizedDescription))
-                appViewModel = AppViewModel(database: database, recoveryState: recoveryState)
+                let database = try DatabaseService(userId: user.id, readOnly: false)
+                recoveryState.disable()
+                attachDatabaseServices(database: database)
+                if database.isReadOnly {
+                    recoveryState.enable(reason: .databaseValidationFailed(
+                        L10n.AppState.databaseReadonlyAccessErrors
+                    ))
+                }
             } catch {
-                // Если и read-only не работает, показываем ошибку
-            errorMessage = "Не удалось открыть базу данных: \(error.localizedDescription)"
+                do {
+                    let database = try DatabaseService(userId: user.id, readOnly: true)
+                    recoveryState.enable(reason: .databaseOpenFailed(error.localizedDescription))
+                    attachDatabaseServices(database: database)
+                } catch {
+                    boundUserId = nil
+                    errorMessage = L10n.AppState.databaseOpenFailed(error.localizedDescription)
+                }
             }
         }
+    }
+
+    private func tearDownDatabaseStack() {
+        #if os(macOS)
+        NotificationCenter.default.post(name: NSNotification.Name("AutoCoreTesterPanelDismiss"), object: nil)
+        #endif
+        appViewModel = nil
+        backupService = nil
+        featureFlagService = nil
+        settingsService = nil
+        recoveryState.disable()
+    }
+
+    private func attachDatabaseServices(database: DatabaseService) {
+        featureFlagService = FeatureFlagService(database: database)
+        backupService = BackupService(database: database)
+        let settingsRepository = SQLiteSettingsRepository(database: database)
+        settingsService = SettingsService(repository: settingsRepository)
+        appViewModel = AppViewModel(database: database, recoveryState: recoveryState)
     }
 }

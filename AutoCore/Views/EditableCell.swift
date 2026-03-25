@@ -1,5 +1,17 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
+typealias NSColor = UIColor
+extension NSColor {
+    static var textBackgroundColor: NSColor { .systemBackground }
+    static var separatorColor: NSColor { .separator }
+    static var controlBackgroundColor: NSColor { .secondarySystemBackground }
+    static var windowBackgroundColor: NSColor { .systemBackground }
+    static var controlAccentColor: NSColor { .tintColor }
+}
+#endif
 
 // MARK: - Editable Cell State
 

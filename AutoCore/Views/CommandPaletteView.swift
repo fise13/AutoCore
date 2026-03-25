@@ -136,6 +136,7 @@ struct CommandPaletteView: View {
         case .all: return "list.bullet"
         case .sold: return "checkmark.seal.fill"
         case .accounting: return "dollarsign.circle.fill"
+        case .warehouse: return "shippingbox.fill"
         case .specificCategory: return "folder.fill"
         }
     }

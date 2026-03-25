@@ -1,4 +1,6 @@
 import SwiftUI
+
+#if os(macOS)
 import AppKit
 
 struct MotorListView: View {
@@ -254,7 +256,11 @@ struct MotorListView: View {
         let onOpenDetails: ((Motor) -> Void)?
         let onCellSave: (Int64, EditableCellState.EditableField, String) -> Void
         
+        #if os(macOS)
         private let gridLineColor = Color(NSColor.separatorColor)
+        #else
+        private let gridLineColor = Color.gray.opacity(0.3)
+        #endif
         
         var body: some View {
             VStack(spacing: 0) {
@@ -268,7 +274,11 @@ struct MotorListView: View {
                     }
                 }
             }
+            #if os(macOS)
             .background(Color(NSColor.textBackgroundColor))
+            #else
+            .background(Color(uiColor: .systemBackground))
+            #endif
         }
         
         // MARK: Header
@@ -527,3 +537,5 @@ struct MotorListView: View {
         }
     }
 }
+
+#endif

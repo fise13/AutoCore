@@ -27,16 +27,25 @@ enum AuthProvider: String, Equatable, Codable {
 
 /// User role in the system (Domain Layer)
 /// Роль пользователя в приложении (определяет уровень доступа)
-enum UserRole: String, Equatable, Codable {
-    case accountant = "accountant"
+enum UserRole: String, Equatable, Codable, CaseIterable {
+    case owner = "owner"
     case admin = "admin"
+    case accountant = "accountant"
+    case employee = "employee"
+    case viewer = "viewer"
     
     var displayName: String {
         switch self {
-        case .accountant:
-            return "Бухгалтер"
+        case .owner:
+            return "Владелец"
         case .admin:
             return "Администратор"
+        case .accountant:
+            return "Бухгалтер"
+        case .employee:
+            return "Сотрудник"
+        case .viewer:
+            return "Наблюдатель"
         }
     }
 }

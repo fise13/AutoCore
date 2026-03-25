@@ -11,6 +11,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import AuthenticationServices
 
 @MainActor
 final class AuthViewModel: ObservableObject {
@@ -22,6 +23,9 @@ final class AuthViewModel: ObservableObject {
     
     /// Сообщение об ошибке (nil если ошибок нет)
     @Published private(set) var errorMessage: String?
+
+    /// Доступна ли повторная попытка (для сетевых и временных ошибок)
+    var canRetry: Bool { lastRetryAction != nil }
     
     // MARK: - Computed Properties (без @Published для производительности)
     
@@ -45,6 +49,7 @@ final class AuthViewModel: ObservableObject {
     
     private let authService: AuthService
     private var authStateTask: Task<Void, Never>?
+    private var lastRetryAction: (() async -> Void)?
     
     // MARK: - Initialization
     
@@ -76,9 +81,9 @@ final class AuthViewModel: ObservableObject {
                 // Обновляем состояние на главном потоке
                 await MainActor.run {
                     self.authState = state
-                    // Очищаем ошибку при успешной аутентификации или выходе
                     if case .authenticated = state {
                         self.errorMessage = nil
+                        self.lastRetryAction = nil
                     }
                 }
             }
@@ -87,18 +92,27 @@ final class AuthViewModel: ObservableObject {
     
     // MARK: - Public Methods
     
-    /// Вход с email и паролем
-    func signIn(email: String, password: String) async {
-        guard !isSigningIn else { return }
-        guard !email.isEmpty, !password.isEmpty else {
-            errorMessage = "Введите email и пароль"
-            return
-        }
-        
+    /// Вход через Google
+    func signInWithGoogle() async {
         errorMessage = nil
-        
+        lastRetryAction = { [weak self] in await self?.signInWithGoogle() }
         do {
-            let user = try await authService.signIn(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            _ = try await authService.signInWithGoogle()
+            // Состояние обновится автоматически через authStateStream
+        } catch let error as AuthError {
+            errorMessage = error.localizedMessage
+        } catch {
+            errorMessage = "Ошибка входа через Google: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Вход по email и паролю
+    func signIn(email: String, password: String) async {
+        errorMessage = nil
+        let email = email, password = password
+        lastRetryAction = { [weak self] in await self?.signIn(email: email, password: password) }
+        do {
+            _ = try await authService.signIn(email: email, password: password)
             // Состояние обновится автоматически через authStateStream
         } catch let error as AuthError {
             errorMessage = error.localizedMessage
@@ -107,19 +121,33 @@ final class AuthViewModel: ObservableObject {
         }
     }
     
-    /// Вход через Google
-    func signInWithGoogle() async {
-        guard !isSigningIn else { return }
-        
+    /// Регистрация по email и паролю
+    func signUp(email: String, password: String) async {
         errorMessage = nil
-        
+        let email = email, password = password
+        lastRetryAction = { [weak self] in await self?.signUp(email: email, password: password) }
         do {
-            let user = try await authService.signInWithGoogle()
+            _ = try await authService.signUp(email: email, password: password)
             // Состояние обновится автоматически через authStateStream
         } catch let error as AuthError {
             errorMessage = error.localizedMessage
         } catch {
-            errorMessage = "Ошибка входа: \(error.localizedDescription)"
+            errorMessage = "Ошибка регистрации: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Вход через Apple ID (Sign in with Apple)
+    func handleAppleSignIn(credential: ASAuthorizationAppleIDCredential) async {
+        errorMessage = nil
+        let credential = credential
+        lastRetryAction = { [weak self] in await self?.handleAppleSignIn(credential: credential) }
+        do {
+            _ = try await authService.signInWithApple(credential: credential)
+            // Состояние обновится автоматически через authStateStream
+        } catch let error as AuthError {
+            errorMessage = error.localizedMessage
+        } catch {
+            errorMessage = "Ошибка входа через Apple ID: \(error.localizedDescription)"
         }
     }
     
@@ -141,18 +169,51 @@ final class AuthViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    /// Повторить последнюю неудачную попытку входа/регистрации
+    func retryLastAction() async {
+        await lastRetryAction?()
+    }
+
+    /// Установка сообщения об ошибке из UI-слоя
+    func setError(_ message: String) {
+        errorMessage = message
+    }
+
+    /// Обновить текущего пользователя из бэкенда (после смены companyId/role в onboarding).
+    func refreshCurrentUser() async {
+        do {
+            try await authService.refreshCurrentUser()
+        } catch {
+            errorMessage = "Ошибка обновления: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Синхронизировать companyId в Firestore users/{uid}, чтобы правила видели актуальный профиль (в т.ч. для старых логинов).
+    func syncCompanyIdToFirestoreIfNeeded(companyId: String) async {
+        guard !companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        do {
+            try await authService.syncCompanyIdToFirestoreIfNeeded(companyId: companyId)
+        } catch {
+            // Не блокируем UI; склад/другие запросы могут потом синхронизировать при первом обращении.
+        }
+    }
+
+    /// Удалить аккаунт пользователя (Firestore + Firebase Auth).
+    func deleteAccount() async {
+        do {
+            try await authService.deleteAccount()
+        } catch let error as AuthError {
+            errorMessage = error.localizedMessage
+        } catch {
+            errorMessage = "Ошибка удаления: \(error.localizedDescription)"
+        }
+    }
+
     /// Обновление отображаемого имени пользователя (для провайдеров, которые это поддерживают).
-    /// Сейчас поддерживается только авторизация через Apple ID (CloudKitAuthService).
     func updateProfile(displayName: String?) async {
         errorMessage = nil
-        
-        guard let cloudKitService = authService as? CloudKitAuthService else {
-            errorMessage = "Обновление профиля недоступно для текущего способа входа"
-            return
-        }
-        
         do {
-            try await cloudKitService.updateProfile(displayName: displayName)
+            try await authService.updateProfile(displayName: displayName)
         } catch let error as AuthError {
             errorMessage = error.localizedMessage
         } catch {

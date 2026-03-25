@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct AlertsAndSheetsModifier: ViewModifier {
     @Binding var isShowingImportPreview: Bool
     @Binding var isShowingAddMotor: Bool
@@ -87,3 +89,5 @@ struct AlertsAndSheetsModifier: ViewModifier {
             }
     }
 }
+
+#endif

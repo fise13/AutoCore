@@ -10,6 +10,7 @@ final class SellMotorWithFinancialOperationUseCase {
     private let logger: LoggingService
     private let recoveryState: RecoveryState?
     private let currentUser: String
+    private let companyId: String
     
     init(
         database: DatabaseService,
@@ -17,7 +18,8 @@ final class SellMotorWithFinancialOperationUseCase {
         eventBus: EventBus = .shared,
         logger: LoggingService = .shared,
         recoveryState: RecoveryState? = nil,
-        currentUser: String
+        currentUser: String,
+        companyId: String
     ) {
         self.database = database
         self.motorRepository = motorRepository
@@ -25,6 +27,7 @@ final class SellMotorWithFinancialOperationUseCase {
         self.logger = logger
         self.recoveryState = recoveryState
         self.currentUser = currentUser
+        self.companyId = companyId
     }
     
     func execute(
@@ -95,7 +98,8 @@ final class SellMotorWithFinancialOperationUseCase {
                         transmission: motor.transmission,
                         arrivalDate: motor.arrivalDate,
                         soldDate: motor.soldDate,
-                        deletedAt: motor.deletedAt
+                        deletedAt: motor.deletedAt,
+                        companyId: self.companyId
                     )
                     // Загружаем сохранённый мотор через unlocked версию
                     guard let dbMotor = try database.fetchMotorByIDUnlocked(id: motorID) else {
@@ -139,7 +143,8 @@ final class SellMotorWithFinancialOperationUseCase {
                     source: "Продажа мотора",
                     details: motorInfo,
                     category: tempOperation.category,
-                    description: tempOperation.description.isEmpty ? motorInfo : tempOperation.description
+                    description: tempOperation.description.isEmpty ? motorInfo : tempOperation.description,
+                    companyId: self.companyId
                 )
                 
                 // Загружаем созданную операцию через unlocked версию
@@ -191,6 +196,16 @@ final class SellMotorWithFinancialOperationUseCase {
                 relatedMotorID: savedOperation.relatedMotorID
             )
             eventBus.publish(operationEvent)
+            
+            // Пушим созданную финансовую операцию в Firestore для синхронизации с iOS.
+            let financialSync = FirestoreFinancialSyncService()
+            Task { @MainActor in
+                do {
+                    _ = try await financialSync.pushOperation(savedOperation, companyId: companyId)
+                } catch {
+                    logger.error("Firestore PUSH error in SellMotorWithFinancialOperationUseCase", error: error)
+                }
+            }
             
             logger.info("Motor sold with financial operation successfully: motorID=\(motorID), operationID=\(savedOperation.id)", correlationID: correlationID)
             

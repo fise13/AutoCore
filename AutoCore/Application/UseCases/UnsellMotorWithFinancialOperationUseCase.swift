@@ -10,6 +10,7 @@ final class UnsellMotorWithFinancialOperationUseCase {
     private let logger: LoggingService
     private let recoveryState: RecoveryState?
     private let currentUser: String
+    private let companyId: String
     
     init(
         database: DatabaseService,
@@ -17,7 +18,8 @@ final class UnsellMotorWithFinancialOperationUseCase {
         eventBus: EventBus = .shared,
         logger: LoggingService = .shared,
         recoveryState: RecoveryState? = nil,
-        currentUser: String
+        currentUser: String,
+        companyId: String
     ) {
         self.database = database
         self.motorRepository = motorRepository
@@ -25,6 +27,7 @@ final class UnsellMotorWithFinancialOperationUseCase {
         self.logger = logger
         self.recoveryState = recoveryState
         self.currentUser = currentUser
+        self.companyId = companyId
     }
     
     func execute(
@@ -122,7 +125,8 @@ final class UnsellMotorWithFinancialOperationUseCase {
                     source: "Возврат мотора",
                     details: motorInfo,
                     category: tempOperation.category,
-                    description: tempOperation.description.isEmpty ? motorInfo : tempOperation.description
+                    description: tempOperation.description.isEmpty ? motorInfo : tempOperation.description,
+                    companyId: self.companyId
                 )
                 
                 // Загружаем созданную операцию через unlocked версию
@@ -173,6 +177,16 @@ final class UnsellMotorWithFinancialOperationUseCase {
                 relatedMotorID: savedOperation.relatedMotorID
             )
             eventBus.publish(operationEvent)
+            
+            // Пушим операцию возврата в Firestore для синхронизации с iOS.
+            let financialSync = FirestoreFinancialSyncService()
+            Task { @MainActor in
+                do {
+                    _ = try await financialSync.pushOperation(savedOperation, companyId: companyId)
+                } catch {
+                    logger.error("Firestore PUSH error in UnsellMotorWithFinancialOperationUseCase", error: error)
+                }
+            }
             
             logger.info("Motor unsold with refund operation successfully: motorID=\(motorID), operationID=\(savedOperation.id)", correlationID: correlationID)
             

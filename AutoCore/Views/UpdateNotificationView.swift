@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// View для уведомления об обновлении
+#if os(macOS)
+
+/// View для уведомления об обновлении (только macOS)
 struct UpdateNotificationView: View {
     @ObservedObject var updateService: UpdateService
     @Binding var isPresented: Bool
@@ -86,3 +88,5 @@ struct UpdateNotificationView: View {
         }
     }
 }
+
+#endif

@@ -1,6 +1,8 @@
 import Foundation
 import ZIPFoundation
 
+#if os(macOS)
+
 final class ExcelExportService {
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -606,6 +608,8 @@ final class ExcelExportService {
         }
     }
 }
+
+#endif
 
 // MARK: - Errors
 

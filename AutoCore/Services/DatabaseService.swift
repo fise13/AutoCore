@@ -10,6 +10,8 @@ nonisolated final class DatabaseService {
         var brandID: Int64? = nil
         var engineID: Int64? = nil
         var includeDeleted: Bool = false // По умолчанию скрываем удаленные моторы
+        /// Фильтр по компании; если задан и не пустой, возвращаются только моторы этой компании.
+        var companyId: String? = nil
     }
 
     private let queue = DispatchQueue(label: "AutoCore.DatabaseQueue")
@@ -24,18 +26,14 @@ nonisolated final class DatabaseService {
     /// Флаг read-only режима (Recovery Mode)
     private(set) var isReadOnly: Bool = false
 
-    init(readOnly: Bool = false) throws {
+    /// Файл SQLite, открытый этим экземпляром (для бэкапов и восстановления).
+    private(set) var databaseFileURL: URL
+
+    /// Открывает изолированную по Firebase UID базу в Application Support.
+    init(userId: String, readOnly: Bool = false) throws {
         self.isReadOnly = readOnly
-        
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let folderURL = appSupport.appendingPathComponent("AutoCore", isDirectory: true)
-        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
-        let dbURL = folderURL.appendingPathComponent("autocore.sqlite")
+        let dbURL = try DatabaseFileLocator.resolveDatabaseURL(forUserId: userId)
+        self.databaseFileURL = dbURL
 
         // В read-only режиме пробуем открыть только для чтения
         let flags: Int32
@@ -44,29 +42,25 @@ nonisolated final class DatabaseService {
         } else {
             flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         }
-        
+
         if sqlite3_open_v2(dbURL.path, &db, flags, nil) != SQLITE_OK {
-            // Если не удалось открыть в read-write, пробуем read-only
-            if !readOnly {
-                sqlite3_close(db)
-                db = nil
-                self.isReadOnly = true
-                let readOnlyFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-                if sqlite3_open_v2(dbURL.path, &db, readOnlyFlags, nil) != SQLITE_OK {
             throw DatabaseError.openDatabase(message: errorMessage)
-                }
-            } else {
-                throw DatabaseError.openDatabase(message: errorMessage)
-            }
         }
 
-        // Включаем внешние ключи (если не read-only)
         if !isReadOnly {
-        try execute(sql: "PRAGMA foreign_keys = ON;")
-        try migrate()
-        } else {
-            // В read-only режиме просто включаем foreign keys для запросов
             try execute(sql: "PRAGMA foreign_keys = ON;")
+            try migrate()
+        } else {
+            try execute(sql: "PRAGMA foreign_keys = ON;")
+        }
+    }
+
+    /// Закрывает соединение до замены файла на диске (восстановление из бэкапа). После вызова экземпляр нельзя использовать.
+    func closeForTeardown() {
+        queue.sync {
+            guard let handle = db else { return }
+            sqlite3_close(handle)
+            db = nil
         }
     }
     
@@ -78,7 +72,9 @@ nonisolated final class DatabaseService {
     }
 
     deinit {
-        sqlite3_close(db)
+        if let handle = db {
+            sqlite3_close(handle)
+        }
     }
 
     func fetchBrands() throws -> [Brand] {
@@ -149,6 +145,15 @@ nonisolated final class DatabaseService {
         if let engineID = filter.engineID {
             sql += " AND engines.id = ?"
             bindings.append(.int64(engineID))
+        }
+        if let companyId = filter.companyId, !companyId.isEmpty {
+            // Обратная совместимость: моторы с company_id = 'default' (до мульти-тенанта) показываем текущему пользователю
+            if companyId == "default" {
+                sql += " AND motors.company_id = 'default'"
+            } else {
+                sql += " AND (motors.company_id = ? OR motors.company_id = 'default')"
+                bindings.append(.text(companyId))
+            }
         }
         switch filter.availability {
         case .all:
@@ -228,6 +233,14 @@ nonisolated final class DatabaseService {
         if let engineID = filter.engineID {
             sql += " AND engines.id = ?"
             bindings.append(.int64(engineID))
+        }
+        if let companyId = filter.companyId, !companyId.isEmpty {
+            if companyId == "default" {
+                sql += " AND motors.company_id = 'default'"
+            } else {
+                sql += " AND (motors.company_id = ? OR motors.company_id = 'default')"
+                bindings.append(.text(companyId))
+            }
         }
         switch filter.availability {
         case .all:
@@ -326,13 +339,15 @@ nonisolated final class DatabaseService {
         transmission: String,
         arrivalDate: Date?,
         soldDate: Date?,
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil,
+        companyId: String = "default"
     ) throws -> Int64 {
         try assertNotReadOnly()
         let normalizedSerial = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedSerial.isEmpty {
             throw DatabaseError.invalidInput(message: "Пустой серийный номер.")
         }
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         try inTransaction {
             try insertOrUpdateMotorUnlocked(
                 engineID: engineID,
@@ -343,7 +358,8 @@ nonisolated final class DatabaseService {
                 transmission: transmission,
                 arrivalDate: arrivalDate,
                 soldDate: soldDate,
-                deletedAt: deletedAt
+                deletedAt: deletedAt,
+                companyId: cid
             )
         }
         return try singleValueInt64(
@@ -361,7 +377,8 @@ nonisolated final class DatabaseService {
         transmission: String,
         arrivalDate: Date?,
         soldDate: Date?,
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil,
+        companyId: String = "default"
     ) throws -> Int64 {
         let createdAt = dateFormatter.string(from: Date())
         let updatedAt = createdAt
@@ -369,8 +386,8 @@ nonisolated final class DatabaseService {
         let arrivalString = dateFormatter.string(from: arrivalValue)
         let soldString = soldDate.map { dateFormatter.string(from: $0) }
         let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         // Серийный номер уникален, поэтому применяем upsert.
-        // Вызывается внутри queue.sync через executeInTransactionBlock
         try executeUnlocked(
             sql: """
             INSERT INTO motors (
@@ -384,9 +401,10 @@ nonisolated final class DatabaseService {
                 sold_date,
                 deleted_at,
                 created_at,
-                updated_at
+                updated_at,
+                company_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(serial_code) DO UPDATE SET
                 engine_id = excluded.engine_id,
                 configuration = excluded.configuration,
@@ -396,7 +414,8 @@ nonisolated final class DatabaseService {
                 arrival_date = excluded.arrival_date,
                 sold_date = excluded.sold_date,
                 deleted_at = excluded.deleted_at,
-                updated_at = excluded.updated_at;
+                updated_at = excluded.updated_at,
+                company_id = excluded.company_id;
             """,
             bindings: [
                 .int64(engineID),
@@ -409,7 +428,8 @@ nonisolated final class DatabaseService {
                 .textOptional(soldString),
                 .textOptional(deletedString),
                 .text(createdAt),
-                .text(updatedAt)
+                .text(updatedAt),
+                .text(cid)
             ]
         )
         // Возвращаем ID созданного или обновлённого мотора
@@ -1062,31 +1082,19 @@ nonisolated final class DatabaseService {
     
     /// Создание резервной копии базы данных
     func createBackup() throws -> String {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        
-        let dbPath = appSupport.appendingPathComponent("AutoCore/autocore.sqlite")
-        let backupDir = appSupport.appendingPathComponent("AutoCore/backups")
-        
-        try FileManager.default.createDirectory(
-            at: backupDir,
-            withIntermediateDirectories: true
-        )
-        
+        let dbPath = databaseFileURL
+        let backupDir = try DatabaseFileLocator.backupsDirectoryURL()
+
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let timestamp = dateFormatter.string(from: Date())
-        
+
         let backupPath = backupDir.appendingPathComponent("autocore_backup_\(timestamp).sqlite")
-        
+
         if FileManager.default.fileExists(atPath: dbPath.path) {
-            try FileManager.default.copyItem(at: URL(fileURLWithPath: dbPath.path), to: backupPath)
+            try FileManager.default.copyItem(at: dbPath, to: backupPath)
         }
-        
+
         return backupPath.path
     }
     
@@ -1107,6 +1115,26 @@ nonisolated final class DatabaseService {
         let currentVersion = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
         
         // Миграция на версию 13: Fix account constraint to allow 'kaspi'
+        // Миграция на версию 15: company_id в motors (разделение моторов по компаниям)
+        if currentVersion < 15 {
+            if tableExists("motors") && !tableHasColumns(table: "motors", required: ["company_id"]) {
+                try execute(sql: "ALTER TABLE motors ADD COLUMN company_id TEXT NOT NULL DEFAULT 'default';")
+                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_company_id ON motors(company_id);")
+            }
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (15);")
+        }
+
+        // Миграция на версию 14: company_id в financial_operations (разделение данных по компаниям)
+        if currentVersion < 14 {
+            if tableExists("financial_operations") && !tableHasColumns(table: "financial_operations", required: ["company_id"]) {
+                try execute(sql: "ALTER TABLE financial_operations ADD COLUMN company_id TEXT NOT NULL DEFAULT 'default';")
+                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_company_id ON financial_operations(company_id);")
+            }
+            try execute(sql: "DELETE FROM schema_version;")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (14);")
+        }
+
         if currentVersion < 13 {
             let tableExists = self.tableExists("financial_operations")
             
@@ -1356,6 +1384,28 @@ nonisolated final class DatabaseService {
             try execute(sql: "INSERT INTO schema_version (version) VALUES (10);")
         }
         
+        // Защитная проверка схемы financial_operations для новых/старых БД:
+        // гарантируем наличие колонок category и description,
+        // так как запросы и CloudKit-синк всегда их ожидают.
+        if tableExists("financial_operations") {
+            // category
+            if !tableHasColumns(table: "financial_operations", required: ["category"]) {
+                do {
+                    try execute(sql: "ALTER TABLE financial_operations ADD COLUMN category TEXT;")
+                } catch {
+                    // Колонка могла уже появиться в результате частичных миграций – игнорируем ошибку
+                }
+            }
+            // description
+            if !tableHasColumns(table: "financial_operations", required: ["description"]) {
+                do {
+                    try execute(sql: "ALTER TABLE financial_operations ADD COLUMN description TEXT NOT NULL DEFAULT '';")
+                } catch {
+                    // Аналогично, если колонка уже есть – тихо продолжаем
+                }
+            }
+        }
+        
         // Миграция на версию 9: Settings
         if currentVersion < 9 {
             try execute(sql: """
@@ -1372,13 +1422,20 @@ nonisolated final class DatabaseService {
         
         // Миграция на версию 8: Soft Delete
         if currentVersion < 8 {
-            try execute(sql: """
-                ALTER TABLE motors ADD COLUMN deleted_at TEXT;
-            """)
-            
-            try execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_motors_deleted_at ON motors(deleted_at);
-            """)
+            // На старых БД добавляем колонку deleted_at, если таблица motors уже существует
+            if tableExists("motors") && !tableHasColumns(table: "motors", required: ["deleted_at"]) {
+                do {
+                    try execute(sql: "ALTER TABLE motors ADD COLUMN deleted_at TEXT;")
+                } catch {
+                    // Если колонка уже есть или таблицы нет — игнорируем
+                }
+                
+                do {
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_deleted_at ON motors(deleted_at);")
+                } catch {
+                    // Индекс может уже существовать — игнорируем
+                }
+            }
             
             try execute(sql: "DELETE FROM schema_version;")
             try execute(sql: "INSERT INTO schema_version (version) VALUES (8);")
@@ -1402,12 +1459,17 @@ nonisolated final class DatabaseService {
         
         // Миграция на версию 6: индексы для оптимизации запросов фильтрации моторов
         if currentVersion < 6 {
-            // Составной индекс для фильтрации по engine_id и sold_date одновременно
-            // Это оптимизирует запросы вида: WHERE engine_id = ? AND sold_date IS NOT NULL
-            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_engine_id_sold_date ON motors(engine_id, sold_date);")
-            
-            // Убеждаемся, что индекс для sold_date существует
-            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_sold_date ON motors(sold_date);")
+            // На некоторых старых/частично мигрированных БД таблица motors может
+            // еще отсутствовать в этот момент (из-за исторического порядка миграций).
+            // В этом случае пропускаем шаг и создадим индексы после создания таблицы ниже.
+            if tableExists("motors") {
+                // Составной индекс для фильтрации по engine_id и sold_date одновременно
+                // Это оптимизирует запросы вида: WHERE engine_id = ? AND sold_date IS NOT NULL
+                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_engine_id_sold_date ON motors(engine_id, sold_date);")
+                
+                // Убеждаемся, что индекс для sold_date существует
+                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_sold_date ON motors(sold_date);")
+            }
             
             try execute(sql: "DELETE FROM schema_version;")
             try execute(sql: "INSERT INTO schema_version (version) VALUES (6);")
@@ -1659,17 +1721,102 @@ nonisolated final class DatabaseService {
             transmission TEXT NOT NULL DEFAULT '',
             arrival_date TEXT NOT NULL,
             sold_date TEXT,
+            deleted_at TEXT,
+            company_id TEXT NOT NULL DEFAULT 'default',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(engine_id) REFERENCES engines(id) ON DELETE CASCADE
         );
         """)
 
+        // После CREATE: новые БД получают колонки из DDL; старые без company_id — догоняем (см. баг v15 до создания motors).
+        if tableExists("motors") && !tableHasColumns(table: "motors", required: ["company_id"]) {
+            try execute(sql: "ALTER TABLE motors ADD COLUMN company_id TEXT NOT NULL DEFAULT 'default';")
+            try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_company_id ON motors(company_id);")
+        }
+
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_engine_id ON motors(engine_id);")
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_sold_date ON motors(sold_date);")
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_serial_code ON motors(serial_code);")
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_arrival_date ON motors(arrival_date DESC);")
         try execute(sql: "CREATE INDEX IF NOT EXISTS idx_engines_brand_id ON engines(brand_id);")
+
+        // Канонический reconciliation-блок для специфичных таблиц.
+        // Нужен для старых/частично мигрированных БД, где version уже высокий,
+        // но specific_categories / specific_records отсутствуют.
+        try execute(sql: """
+        CREATE TABLE IF NOT EXISTS specific_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
+        """)
+
+        try execute(sql: """
+        CREATE TABLE IF NOT EXISTS specific_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER NOT NULL,
+            row_index INTEGER NOT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(category_id) REFERENCES specific_categories(id) ON DELETE CASCADE
+        );
+        """)
+
+        try execute(sql: "CREATE INDEX IF NOT EXISTS idx_specific_records_category_id ON specific_records(category_id);")
+        try execute(sql: "CREATE INDEX IF NOT EXISTS idx_specific_records_row_index ON specific_records(row_index);")
+
+        // Для совместимости старых установок гарантируем service_records.
+        try execute(sql: """
+        CREATE TABLE IF NOT EXISTS service_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serial_code TEXT NOT NULL,
+            sheet_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            record_date TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
+        try execute(sql: "CREATE INDEX IF NOT EXISTS idx_service_records_serial_code ON service_records(serial_code);")
+        try execute(sql: "CREATE INDEX IF NOT EXISTS idx_service_records_category ON service_records(category);")
+
+        // И настройки/флаги тоже держим в канонической форме.
+        try execute(sql: """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """)
+        try execute(sql: """
+        CREATE TABLE IF NOT EXISTS feature_flags (
+            name TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """)
+        try execute(sql: "CREATE INDEX IF NOT EXISTS idx_feature_flags_name ON feature_flags(name);")
+
+        // Гарантируем наличие deleted_at даже на новых установках, где версия схемы уже > 8
+        if tableExists("motors") && !tableHasColumns(table: "motors", required: ["deleted_at"]) {
+            do {
+                try execute(sql: "ALTER TABLE motors ADD COLUMN deleted_at TEXT;")
+            } catch {
+                // Если колонка уже есть — игнорируем
+            }
+            
+            do {
+                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_deleted_at ON motors(deleted_at);")
+            } catch {
+                // Индекс может уже существовать — игнорируем
+            }
+        }
+
+        // Фиксируем актуальную версию схемы в конце канонической reconciliation-фазы.
+        // Это предотвращает повторный запуск старых шагов миграции на следующих стартах.
+        try execute(sql: "DELETE FROM schema_version;")
+        try execute(sql: "INSERT INTO schema_version (version) VALUES (15);")
     }
 
     func tableExists(_ table: String) -> Bool {
@@ -1777,7 +1924,10 @@ nonisolated final class DatabaseService {
         if stepResult != SQLITE_DONE {
             let errorMsg = errorMessage
             let extendedError = sqlite3_extended_errcode(db)
-            throw DatabaseError.executionFailed(message: "\(errorMsg) (SQLite error code: \(stepResult), extended: \(extendedError))")
+            let normalizedSQL = sql.replacingOccurrences(of: "\n", with: " ")
+            throw DatabaseError.executionFailed(
+                message: "\(errorMsg) (SQLite error code: \(stepResult), extended: \(extendedError), sql: \(normalizedSQL))"
+            )
         }
     }
 
@@ -1902,17 +2052,19 @@ nonisolated final class DatabaseService {
         details: String = "",
         category: String? = nil,
         description: String = "",
-        cloudRecordId: String? = nil
+        cloudRecordId: String? = nil,
+        companyId: String = "default"
     ) throws -> Int64 {
         try assertNotReadOnly()
         let createdAtStr = dateFormatter.string(from: createdAt)
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         return try queue.sync {
             try executeUnlocked(
                 sql: """
                 INSERT INTO financial_operations (
                     type, amount, payment_method, cash_received, change_given,
-                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 bindings: [
                     .text(type),
@@ -1928,7 +2080,8 @@ nonisolated final class DatabaseService {
                     .text(source),
                     .text(details),
                     category.map { .text($0) } ?? .textOptional(nil),
-                    .text(description.isEmpty ? (details.isEmpty ? "" : details) : description)
+                    .text(description.isEmpty ? (details.isEmpty ? "" : details) : description),
+                    .text(cid)
                 ]
             )
             return sqlite3_last_insert_rowid(db)
@@ -1951,15 +2104,17 @@ nonisolated final class DatabaseService {
         details: String = "",
         category: String? = nil,
         description: String = "",
-        cloudRecordId: String? = nil
+        cloudRecordId: String? = nil,
+        companyId: String = "default"
     ) throws -> Int64 {
         let createdAtStr = dateFormatter.string(from: createdAt)
+        let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         try executeUnlocked(
             sql: """
             INSERT INTO financial_operations (
                 type, amount, payment_method, cash_received, change_given,
-                account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, company_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             bindings: [
                 .text(type),
@@ -1975,22 +2130,34 @@ nonisolated final class DatabaseService {
                 .text(source),
                 .text(details),
                 category.map { .text($0) } ?? .textOptional(nil),
-                .text(description.isEmpty ? (details.isEmpty ? "" : details) : description)
+                .text(description.isEmpty ? (details.isEmpty ? "" : details) : description),
+                .text(cid)
             ]
         )
         return sqlite3_last_insert_rowid(db)
     }
     
     /// Получить финансовую операцию по ID
-    func fetchFinancialOperation(id: Int64) throws -> FinancialOperation? {
-        return try query(
-            sql: """
+    func fetchFinancialOperation(id: Int64, companyId: String? = nil) throws -> FinancialOperation? {
+        var sql = """
             SELECT id, type, amount, payment_method, cash_received, change_given,
                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
             FROM financial_operations
-            WHERE id = ?;
-            """,
-            bindings: [.int64(id)]
+            WHERE id = ?
+            """
+        var bindings: [SQLiteBinding] = [.int64(id)]
+        if let cid = companyId, !cid.isEmpty {
+            if cid == "default" {
+                sql += " AND company_id = 'default'"
+            } else {
+                sql += " AND (company_id = ? OR company_id = 'default')"
+                bindings.append(.text(cid))
+            }
+        }
+        sql += ";"
+        return try query(
+            sql: sql,
+            bindings: bindings
         ) { statement in
             FinancialOperation(
                 id: sqlite3_column_int64(statement, 0),
@@ -2011,12 +2178,12 @@ nonisolated final class DatabaseService {
             )
         }.first
     }
-
-    /// Поиск финансовой операции по CloudKit record ID.
-    /// Сейчас таблица `financial_operations` не хранит `cloud_record_id`, поэтому метод всегда возвращает nil.
-    /// Оставлен как заглушка, чтобы CloudKit-синхронизация могла собираться; при расширении схемы БД сюда нужно добавить реальный запрос.
-    func fetchFinancialOperationByCloudRecordId(_ cloudRecordId: String) throws -> FinancialOperation? {
-        return nil
+    
+    /// Полностью очищает таблицу финансовых операций.
+    /// Используется iOS‑клиентом перед синхронизацией из CloudKit.
+    func clearAllFinancialOperations() throws {
+        try assertNotReadOnly()
+        try execute(sql: "DELETE FROM financial_operations;")
     }
     
     func fetchFinancialOperationUnlocked(id: Int64) throws -> FinancialOperation? {
@@ -2110,6 +2277,15 @@ nonisolated final class DatabaseService {
         """
         var bindings: [SQLiteBinding] = []
         
+        if let companyId = filter.companyId, !companyId.isEmpty {
+            if companyId == "default" {
+                sql += " AND company_id = 'default'"
+            } else {
+                sql += " AND (company_id = ? OR company_id = 'default')"
+                bindings.append(.text(companyId))
+            }
+        }
+        
         if let type = filter.type {
             sql += " AND type = ?"
             bindings.append(.text(type.rawValue))
@@ -2171,12 +2347,13 @@ nonisolated final class DatabaseService {
     }
     
     /// Вычислить баланс кассы/Каспи
-    func calculateCashBalance(account: String, upToDate: Date? = nil) throws -> Decimal {
+    func calculateCashBalance(account: String, upToDate: Date? = nil, companyId: String? = nil) throws -> Decimal {
         var sql = """
         SELECT 
             COALESCE(SUM(
                 CASE 
                     WHEN type = 'sale' AND account = ? THEN amount
+                    WHEN type = 'income' AND account = ? THEN amount
                     WHEN type = 'refund' AND account = ? THEN -amount
                     WHEN type = 'expense' AND account = ? THEN -amount
                     WHEN type = 'transfer' AND account = ? THEN -amount
@@ -2186,7 +2363,23 @@ nonisolated final class DatabaseService {
         FROM financial_operations
         WHERE account = ?
         """
-        var bindings: [SQLiteBinding] = [.text(account), .text(account), .text(account), .text(account), .text(account)]
+        var bindings: [SQLiteBinding] = [
+            .text(account), // sale
+            .text(account), // income
+            .text(account), // refund
+            .text(account), // expense
+            .text(account), // transfer
+            .text(account)  // WHERE account = ?
+        ]
+        
+        if let cid = companyId, !cid.isEmpty {
+            if cid == "default" {
+                sql += " AND company_id = 'default'"
+            } else {
+                sql += " AND (company_id = ? OR company_id = 'default')"
+                bindings.append(.text(cid))
+            }
+        }
         
         if let upToDate = upToDate {
             sql += " AND created_at <= ?"
@@ -2210,6 +2403,8 @@ nonisolated final class DatabaseService {
         var toDate: Date? = nil
         var limit: Int? = nil
         var offset: Int? = nil
+        /// Фильтр по компании; если задан, возвращаются только операции этой компании.
+        var companyId: String? = nil
     }
     
     struct FinancialOperation {
@@ -2238,12 +2433,27 @@ private enum SQLiteBinding {
     case textOptional(String?)
 }
 
-private enum DatabaseError: Error {
+private enum DatabaseError: LocalizedError {
     case openDatabase(message: String)
     case prepareFailed(message: String)
     case executionFailed(message: String)
     case invalidInput(message: String)
     case readOnlyError(message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .openDatabase(let message):
+            return "Не удалось открыть базу данных: \(message)"
+        case .prepareFailed(let message):
+            return "Ошибка подготовки SQL-запроса: \(message)"
+        case .executionFailed(let message):
+            return "Ошибка выполнения SQL-запроса: \(message)"
+        case .invalidInput(let message):
+            return "Некорректные входные данные: \(message)"
+        case .readOnlyError(let message):
+            return message
+        }
+    }
 }
 
 /// Thread-safe helper function for reading string columns from SQLite

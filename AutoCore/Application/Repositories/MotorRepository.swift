@@ -1,7 +1,9 @@
 import Foundation
 
 /// Repository Interface for Motor Entity
-protocol MotorRepository {
+protocol MotorRepository: AnyObject {
+    /// Установить текущую компанию для фильтрации и сохранения (моторы привязаны к компании).
+    func setCompanyId(_ companyId: String)
     func save(_ motor: MotorEntity) throws -> MotorEntity
     func findByID(_ id: Int64) throws -> MotorEntity?
     func findAll(filter: MotorFilter) throws -> [MotorEntity]

@@ -35,41 +35,35 @@ struct SettingsView: View {
     }
     
     var body: some View {
-        NavigationSplitView {
-            // Sidebar слева
-            List(selection: $selectedSection) {
-                ForEach(SettingsViewModel.SettingsSection.allCases, id: \.self) { section in
-                    Label(section.rawValue, systemImage: section.icon)
-                        .tag(section)
+        Group {
+            #if os(macOS)
+            NavigationSplitView {
+                List(selection: $selectedSection) {
+                    ForEach(SettingsViewModel.SettingsSection.allCases, id: \.self) { section in
+                        Label(section.rawValue, systemImage: section.icon)
+                            .tag(section)
+                    }
+                }
+                .listStyle(.sidebar)
+                .frame(minWidth: 200, idealWidth: 240)
+            } detail: {
+                settingsDetailContent
+            }
+            .frame(minWidth: 700, minHeight: 500)
+            #else
+            NavigationStack {
+                List(SettingsViewModel.SettingsSection.allCases, id: \.self) { section in
+                    NavigationLink(value: section) {
+                        Label(section.rawValue, systemImage: section.icon)
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .navigationDestination(for: SettingsViewModel.SettingsSection.self) { section in
+                    settingsDetailForSection(section)
                 }
             }
-            .listStyle(.sidebar)
-            .frame(minWidth: 200, idealWidth: 240)
-        } detail: {
-            // Контент справа
-            Group {
-                switch selectedSection {
-                case .general:
-                    GeneralSettingsView(viewModel: viewModel)
-                case .features:
-                    FeatureFlagsSettingsView(viewModel: viewModel)
-                case .data:
-                    BackupManagementViewNew(
-                        backupRepository: BackupRepositoryLocalImpl(),
-                        databaseService: databaseService,
-                        recoveryState: recoveryState
-                    )
-                case .importExport:
-                    ImportExportSettingsView(viewModel: viewModel)
-                case .workflow:
-                    WorkflowSettingsView(viewModel: viewModel)
-                case .advanced:
-                    AdvancedSettingsView(viewModel: viewModel, isExpanded: $isAdvancedExpanded)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #endif
         }
-        .frame(minWidth: 700, minHeight: 500)
         .navigationTitle("Настройки")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -83,6 +77,53 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .help("Закрыть настройки")
             }
+        }
+    }
+    
+    @ViewBuilder
+    private var settingsDetailContent: some View {
+        Group {
+            switch selectedSection {
+            case .general:
+                GeneralSettingsView(viewModel: viewModel)
+            case .features:
+                FeatureFlagsSettingsView(viewModel: viewModel)
+            case .data:
+                BackupManagementViewNew(
+                    backupRepository: BackupRepositoryLocalImpl(),
+                    databaseService: databaseService,
+                    recoveryState: recoveryState
+                )
+            case .importExport:
+                ImportExportSettingsView(viewModel: viewModel)
+            case .workflow:
+                WorkflowSettingsView(viewModel: viewModel)
+            case .advanced:
+                AdvancedSettingsView(viewModel: viewModel, isExpanded: $isAdvancedExpanded)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    @ViewBuilder
+    private func settingsDetailForSection(_ section: SettingsViewModel.SettingsSection) -> some View {
+        switch section {
+        case .general:
+            GeneralSettingsView(viewModel: viewModel)
+        case .features:
+            FeatureFlagsSettingsView(viewModel: viewModel)
+        case .data:
+            BackupManagementViewNew(
+                backupRepository: BackupRepositoryLocalImpl(),
+                databaseService: databaseService,
+                recoveryState: recoveryState
+            )
+        case .importExport:
+            ImportExportSettingsView(viewModel: viewModel)
+        case .workflow:
+            WorkflowSettingsView(viewModel: viewModel)
+        case .advanced:
+            AdvancedSettingsView(viewModel: viewModel, isExpanded: $isAdvancedExpanded)
         }
     }
 }

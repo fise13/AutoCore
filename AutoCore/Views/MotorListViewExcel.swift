@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 /// Таблица моторов в стиле Excel - с фиксированными заголовками, выделением ячеек и редактированием
 struct MotorListViewExcel: View {
@@ -91,8 +95,8 @@ struct MotorListViewExcel: View {
     
     private let rowHeight: CGFloat = 25
     private let headerHeight: CGFloat = 28
-    private let gridLineColor = Color(NSColor.separatorColor)
-    private let activeCellColor = Color(NSColor.controlAccentColor)
+    private var gridLineColor: Color { Platform.separatorColor }
+    private var activeCellColor: Color { Platform.controlAccentColor }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -119,7 +123,7 @@ struct MotorListViewExcel: View {
                 }
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(Platform.textBackgroundColor)
         .background(
             KeyboardHandler(
                 onTab: {
@@ -170,7 +174,7 @@ struct MotorListViewExcel: View {
             VStack(spacing: 0) {
                 // Фиксированный заголовок
                 headerRow
-                    .background(Color(NSColor.windowBackgroundColor))
+                    .background(Platform.windowBackgroundColor)
                     .zIndex(1)
                 
                 Divider()
@@ -221,7 +225,7 @@ struct MotorListViewExcel: View {
             // Row header (номер строки)
             ZStack {
                 Rectangle()
-                    .fill(Color(NSColor.controlBackgroundColor))
+                    .fill(Platform.controlBackgroundColor)
                 Text("#")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -235,7 +239,7 @@ struct MotorListViewExcel: View {
             ForEach(Column.allCases) { column in
                 ZStack {
                     Rectangle()
-                        .fill(Color(NSColor.controlBackgroundColor))
+                        .fill(Platform.controlBackgroundColor)
                     Text(column.title)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
@@ -283,7 +287,7 @@ struct MotorListViewExcel: View {
             .buttonStyle(.bordered)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Platform.controlBackgroundColor)
     }
     
     private var footer: some View {
@@ -294,14 +298,14 @@ struct MotorListViewExcel: View {
             Spacer()
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Platform.controlBackgroundColor)
     }
     
     // MARK: - Selection Logic
     
     private func handleRowSelection(motorID: Int64) {
+        #if os(macOS)
         let flags = NSEvent.modifierFlags
-        
         if flags.contains(.command) {
             if selectedMotorIDs.contains(motorID) {
                 selectedMotorIDs.remove(motorID)
@@ -319,6 +323,10 @@ struct MotorListViewExcel: View {
             selectedMotorIDs = [motorID]
             lastSelectedMotorIDForRange = motorID
         }
+        #else
+        selectedMotorIDs = [motorID]
+        lastSelectedMotorIDForRange = motorID
+        #endif
     }
     
     private func handleCellTap(motorID: Int64, column: Column) {
@@ -424,14 +432,14 @@ struct ExcelRowView: View {
             }
         }
         .background(
-            isRowSelected ? Color(NSColor.controlAccentColor).opacity(0.15) : Color.clear
+            isRowSelected ? Platform.controlAccentColor.opacity(0.15) : Color.clear
         )
     }
     
     private var rowHeaderCell: some View {
         ZStack {
             Rectangle()
-                .fill(Color(NSColor.controlBackgroundColor))
+                .fill(Platform.controlBackgroundColor)
             Text("\(rowIndex + 1)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -507,9 +515,7 @@ struct ExcelRowView: View {
         }
         .contextMenu {
             Button("Копировать") {
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(text, forType: .string)
+                Platform.copyToPasteboard(text)
             }
             .keyboardShortcut("c", modifiers: .command)
         }

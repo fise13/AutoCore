@@ -29,14 +29,14 @@ enum FintechColors {
     static let negativeGlow = Color(red: 0.95, green: 0.3, blue: 0.35).opacity(0.5)
     
     /// Neutral / steel
-    static let steel = Color(red: 0.45, green: 0.5, blue: 0.55)
-    static let steelMuted = Color(red: 0.35, green: 0.38, blue: 0.42)
+    static let steel = Color.dynamic(light: Color(red: 0.38, green: 0.43, blue: 0.49), dark: Color(red: 0.45, green: 0.5, blue: 0.55))
+    static let steelMuted = Color.dynamic(light: Color(red: 0.44, green: 0.47, blue: 0.53), dark: Color(red: 0.35, green: 0.38, blue: 0.42))
     
     /// Background layers (dark fintech base)
-    static let backgroundDeep = Color(red: 0.08, green: 0.09, blue: 0.12)
-    static let backgroundMid = Color(red: 0.11, green: 0.12, blue: 0.16)
-    static let backgroundElevated = Color(red: 0.14, green: 0.15, blue: 0.19)
-    static let backgroundHighlight = Color(red: 0.18, green: 0.19, blue: 0.24)
+    static let backgroundDeep = Color.dynamic(light: Color(red: 0.95, green: 0.97, blue: 1.0), dark: Color(red: 0.08, green: 0.09, blue: 0.12))
+    static let backgroundMid = Color.dynamic(light: Color(red: 0.93, green: 0.95, blue: 0.99), dark: Color(red: 0.11, green: 0.12, blue: 0.16))
+    static let backgroundElevated = Color.dynamic(light: Color.white, dark: Color(red: 0.14, green: 0.15, blue: 0.19))
+    static let backgroundHighlight = Color.dynamic(light: Color(red: 0.9, green: 0.93, blue: 0.98), dark: Color(red: 0.18, green: 0.19, blue: 0.24))
     
     /// Accent (cyan/teal terminal feel)
     static let accent = Color(red: 0.2, green: 0.75, blue: 0.85)
@@ -82,9 +82,9 @@ enum FintechGradients {
     /// Panel border (edge glow / lighting)
     static let panelBorder = LinearGradient(
         colors: [
-            Color.white.opacity(0.12),
-            Color.white.opacity(0.04),
-            Color.white.opacity(0.02)
+            Color.dynamic(light: Color.black.opacity(0.12), dark: Color.white.opacity(0.12)),
+            Color.dynamic(light: Color.black.opacity(0.04), dark: Color.white.opacity(0.04)),
+            Color.dynamic(light: Color.black.opacity(0.02), dark: Color.white.opacity(0.02))
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -129,8 +129,8 @@ enum FintechGradients {
 // MARK: - Shadow Layering
 
 enum FintechShadows {
-    static let panelDrop = Color.black.opacity(0.45)
-    static let panelInner = Color.black.opacity(0.35)
+    static let panelDrop = Color.dynamic(light: Color.black.opacity(0.12), dark: Color.black.opacity(0.45))
+    static let panelInner = Color.dynamic(light: Color.black.opacity(0.08), dark: Color.black.opacity(0.35))
     static let glowPositive = FintechColors.positiveGlow
     static let glowNegative = FintechColors.negativeGlow
     static let glowAccent = FintechColors.accentGlow
@@ -398,13 +398,13 @@ struct FintechTabBar: View {
             // Верхняя линия (отделение от контента)
             VStack {
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.dynamic(light: Color.black.opacity(0.06), dark: Color.white.opacity(0.08)))
                     .frame(height: 1)
                 Spacer()
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: -2)
+        .shadow(color: Color.dynamic(light: Color.black.opacity(0.12), dark: Color.black.opacity(0.25)), radius: 12, x: 0, y: -2)
     }
 }
 
