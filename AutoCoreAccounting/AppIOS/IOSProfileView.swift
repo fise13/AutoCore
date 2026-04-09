@@ -59,7 +59,7 @@ struct IOSProfileView: View {
 
     private var headerSection: some View {
         ZStack(alignment: .topTrailing) {
-            IOSPalette.flowlyBlue
+            IOSPalette.headerGradient
                 .frame(height: 140)
                 .ignoresSafeArea(edges: .top)
             VStack(alignment: .leading, spacing: 4) {

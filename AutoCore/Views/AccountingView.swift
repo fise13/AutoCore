@@ -17,6 +17,9 @@ struct AccountingView: View {
     @StateObject private var viewModel: AccountingViewModel
     @State private var isShowingAddExpense = false
     @State private var isShowingExport = false
+    @State private var operationToEdit: FinancialOperation?
+    @State private var operationToDelete: FinancialOperation?
+    @State private var showClearAccountingConfirm = false
     
     private let createExpenseUseCase: CreateExpenseOperationUseCase
     private let financialOperationRepository: FinancialOperationRepository
@@ -60,15 +63,31 @@ struct AccountingView: View {
             }
             // Касса
             else if selectedTab == 1 {
-                CashboxView(viewModel: viewModel)
+                CashboxView(viewModel: viewModel, onDeleteOperation: { operation in
+                    viewModel.deleteOperation(operation)
+                })
             }
             // Расходы
             else if selectedTab == 2 {
-                ExpensesView(viewModel: viewModel)
+                ExpensesView(viewModel: viewModel, onDeleteOperation: { operation in
+                    viewModel.deleteOperation(operation)
+                })
             }
             // Операции
             else {
-                OperationsView(viewModel: viewModel)
+                OperationsView(viewModel: viewModel, onDeleteOperation: { operation in
+                    viewModel.deleteOperation(operation)
+                })
+            }
+            
+            if let errorMessage = viewModel.errorMessage {
+                Divider()
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
             }
         }
         .toolbar {
@@ -98,6 +117,30 @@ struct AccountingView: View {
                 onLogout: onLogout,
                 currentUser: currentUser
             )
+
+            if selectedTab == 3 {
+                ToolbarItemGroup(placement: .automatic) {
+                    Button {
+                        operationToEdit = viewModel.selectedOperation()
+                    } label: {
+                        Label("Редактировать", systemImage: "pencil")
+                    }
+                    .disabled(viewModel.selectedOperation() == nil)
+
+                    Button(role: .destructive) {
+                        operationToDelete = viewModel.selectedOperation()
+                    } label: {
+                        Label("Удалить", systemImage: "trash")
+                    }
+                    .disabled(viewModel.selectedOperation() == nil)
+
+                    Button(role: .destructive) {
+                        showClearAccountingConfirm = true
+                    } label: {
+                        Label("Очистить бухгалтерию", systemImage: "trash.slash")
+                    }
+                }
+            }
         }
         .sheet(isPresented: $isShowingAddExpense) {
             AddExpenseView(viewModel: viewModel, createExpenseUseCase: createExpenseUseCase)
@@ -112,6 +155,45 @@ struct AccountingView: View {
         }
         .onChange(of: viewModel.searchText) { _, _ in
             viewModel.refreshOperations()
+        }
+        .sheet(item: $operationToEdit) { operation in
+            EditOperationSheet(operation: operation) { amount, account, category, description, comment in
+                viewModel.updateOperation(
+                    operation,
+                    amount: amount,
+                    account: account,
+                    category: category,
+                    description: description,
+                    comment: comment
+                )
+                operationToEdit = nil
+            }
+        }
+        .confirmationDialog(
+            "Удалить операцию?",
+            isPresented: Binding(
+                get: { operationToDelete != nil },
+                set: { if !$0 { operationToDelete = nil } }
+            ),
+            presenting: operationToDelete
+        ) { operation in
+            Button("Удалить", role: .destructive) {
+                viewModel.deleteOperation(operation)
+                operationToDelete = nil
+            }
+            Button("Отмена", role: .cancel) {
+                operationToDelete = nil
+            }
+        } message: { operation in
+            Text("Операция на сумму \(formatAmountForDialog(operation.amount)) будет удалена.")
+        }
+        .confirmationDialog("Очистить бухгалтерию?", isPresented: $showClearAccountingConfirm) {
+            Button("Очистить", role: .destructive) {
+                viewModel.deleteAllOperations(companyId: syncCompanyId)
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Будут удалены все операции бухгалтерии для текущей компании.")
         }
         #if os(macOS)
         .task(id: syncCompanyId) {
@@ -191,6 +273,14 @@ struct AccountingView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "dd.MM.yyyy"
         return formatter
+    }
+
+    private func formatAmountForDialog(_ amount: Decimal) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "KZT"
+        formatter.currencySymbol = "₸"
+        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
     }
 }
 
@@ -278,6 +368,7 @@ struct BalanceCard: View {
 
 struct CashboxView: View {
     @ObservedObject var viewModel: AccountingViewModel
+    let onDeleteOperation: (FinancialOperation) -> Void
     
     var body: some View {
         VStack(spacing: 16) {
@@ -299,6 +390,20 @@ struct CashboxView: View {
             List {
                 ForEach(viewModel.operations.filter { $0.account == .cashbox }) { operation in
                     OperationRow(operation: operation)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                onDeleteOperation(operation)
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
+                        }
+                }
+                .onDelete { offsets in
+                    let cashOperations = viewModel.operations.filter { $0.account == .cashbox }
+                    for index in offsets {
+                        guard cashOperations.indices.contains(index) else { continue }
+                        onDeleteOperation(cashOperations[index])
+                    }
                 }
             }
         }
@@ -319,6 +424,7 @@ struct CashboxView: View {
 
 struct OperationsView: View {
     @ObservedObject var viewModel: AccountingViewModel
+    let onDeleteOperation: (FinancialOperation) -> Void
     
     var body: some View {
         VStack(spacing: 0) {
@@ -347,8 +453,35 @@ struct OperationsView: View {
             List {
                 ForEach(viewModel.operations) { operation in
                     OperationRow(operation: operation)
+                        .tag(operation.id)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            viewModel.selectedOperationID = operation.id
+                        }
+                        .contextMenu {
+                            Button {
+                                viewModel.selectedOperationID = operation.id
+                            } label: {
+                                Label("Выбрать", systemImage: "checkmark.circle")
+                            }
+                            Button(role: .destructive) {
+                                onDeleteOperation(operation)
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
+                        }
+                }
+                .onDelete { offsets in
+                    for index in offsets {
+                        guard viewModel.operations.indices.contains(index) else { continue }
+                        onDeleteOperation(viewModel.operations[index])
+                    }
                 }
             }
+            .listStyle(.inset)
+        }
+        .onAppear {
+            viewModel.refreshOperations()
         }
         .onChange(of: viewModel.filterType) { _, _ in
             viewModel.refreshOperations()
@@ -359,8 +492,74 @@ struct OperationsView: View {
     }
 }
 
+private struct EditOperationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let operation: FinancialOperation
+    let onSave: (Decimal, FinancialOperationEntity.Account, String?, String, String) -> Void
+
+    @State private var amount: String
+    @State private var account: FinancialOperationEntity.Account
+    @State private var category: String
+    @State private var description: String
+    @State private var comment: String
+
+    init(
+        operation: FinancialOperation,
+        onSave: @escaping (Decimal, FinancialOperationEntity.Account, String?, String, String) -> Void
+    ) {
+        self.operation = operation
+        self.onSave = onSave
+        _amount = State(initialValue: NSDecimalNumber(decimal: operation.amount).stringValue)
+        _account = State(initialValue: operation.account)
+        _category = State(initialValue: operation.category ?? "")
+        _description = State(initialValue: operation.description)
+        _comment = State(initialValue: operation.comment)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Редактировать операцию")
+                .font(.headline)
+
+            TextField("Сумма", text: $amount)
+
+            Picker("Счёт", selection: $account) {
+                Text("Касса").tag(FinancialOperationEntity.Account.cashbox)
+                Text("Каспи").tag(FinancialOperationEntity.Account.kaspi)
+            }
+
+            TextField("Категория (опционально)", text: $category)
+            TextField("Описание", text: $description, axis: .vertical)
+                .lineLimit(2...4)
+            TextField("Комментарий", text: $comment, axis: .vertical)
+                .lineLimit(2...4)
+
+            HStack {
+                Spacer()
+                Button("Отмена") { dismiss() }
+                Button("Сохранить") {
+                    let parsedAmount = Decimal(string: amount) ?? operation.amount
+                    onSave(
+                        parsedAmount,
+                        account,
+                        category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : category,
+                        description,
+                        comment
+                    )
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled((Decimal(string: amount) ?? 0) <= 0 || description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+    }
+}
+
 struct ExpensesView: View {
     @ObservedObject var viewModel: AccountingViewModel
+    let onDeleteOperation: (FinancialOperation) -> Void
     
     var body: some View {
         VStack(spacing: 0) {
@@ -378,37 +577,23 @@ struct ExpensesView: View {
             .padding()
             
             // Список расходов
-            Table(viewModel.operations.filter { $0.type == .expense }) {
-                TableColumn("Дата") { operation in
-                    Text(formatDate(operation.createdAt))
-                        .foregroundStyle(.secondary)
+            List {
+                ForEach(viewModel.operations.filter { $0.type == .expense }) { operation in
+                    OperationRow(operation: operation)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                onDeleteOperation(operation)
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
+                        }
                 }
-                
-                TableColumn("Сумма") { operation in
-                    Text(formatCurrency(operation.amount))
-                        .foregroundStyle(.red)
-                        .fontWeight(.medium)
-                }
-                
-                TableColumn("Счёт") { operation in
-                    Text(operation.account == .cashbox ? "Касса" : "Каспи")
-                        .foregroundStyle(.secondary)
-                }
-                
-                TableColumn("Категория") { operation in
-                    Text(operation.category ?? "—")
-                        .foregroundStyle(.secondary)
-                }
-                
-                TableColumn("Описание") { operation in
-                    Text(operation.description)
-                        .foregroundStyle(.primary)
-                }
-                
-                TableColumn("Пользователь") { operation in
-                    Text(operation.createdByUser)
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+                .onDelete { offsets in
+                    let expenseOperations = viewModel.operations.filter { $0.type == .expense }
+                    for index in offsets {
+                        guard expenseOperations.indices.contains(index) else { continue }
+                        onDeleteOperation(expenseOperations[index])
+                    }
                 }
             }
         }
@@ -421,20 +606,6 @@ struct ExpensesView: View {
         }
     }
     
-    private func formatCurrency(_ amount: Decimal) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "KZT"
-        formatter.currencySymbol = "₸"
-        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
 }
 
 struct OperationRow: View {

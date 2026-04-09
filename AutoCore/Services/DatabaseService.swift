@@ -297,6 +297,27 @@ nonisolated final class DatabaseService {
         )
     }
 
+    func updateBrandName(brandID: Int64, name: String) throws {
+        try assertNotReadOnly()
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            throw DatabaseError.invalidInput(message: "Пустое имя бренда.")
+        }
+        try inTransaction {
+            try executeUnlocked(
+                sql: """
+                UPDATE brands
+                SET name = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(normalized),
+                    .int64(brandID)
+                ]
+            )
+        }
+    }
+
     func upsertEngine(brandID: Int64, code: String) throws -> Int64 {
         let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.isEmpty {
@@ -487,6 +508,27 @@ nonisolated final class DatabaseService {
                     .text(arrivalString),
                     .textOptional(soldString),
                     .textOptional(deletedString),
+                    .text(updatedAt),
+                    .int64(id)
+                ]
+            )
+        }
+    }
+
+    func updateMotorSerialCode(id: Int64, serialCode: String) throws {
+        try assertNotReadOnly()
+        let trimmed = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try inTransaction {
+            let updatedAt = dateFormatter.string(from: Date())
+            try executeUnlocked(
+                sql: """
+                UPDATE motors
+                SET serial_code = ?, updated_at = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(trimmed),
                     .text(updatedAt),
                     .int64(id)
                 ]
@@ -782,15 +824,32 @@ nonisolated final class DatabaseService {
             )
         }
     }
+
+    func updateSpecificRecordCategory(id: Int64, categoryID: Int64) throws {
+        try assertNotReadOnly()
+        try inTransaction {
+            try executeUnlocked(
+                sql: """
+                UPDATE specific_records
+                SET category_id = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .int64(categoryID),
+                    .int64(id)
+                ]
+            )
+        }
+    }
     
     // Методы для чтения specific_categories и specific_records
-    struct SpecificCategory: Identifiable {
+    struct SpecificCategory: Identifiable, Hashable {
         let id: Int64
         let name: String
         let createdAt: Date
     }
     
-    struct SpecificRecord: Identifiable {
+    struct SpecificRecord: Identifiable, Hashable {
         let id: Int64
         let categoryID: Int64
         let rowIndex: Int
@@ -1114,25 +1173,68 @@ nonisolated final class DatabaseService {
 
         let currentVersion = (try? singleValueInt64(sql: "SELECT version FROM schema_version LIMIT 1;")) ?? 0
         
-        // Миграция на версию 13: Fix account constraint to allow 'kaspi'
-        // Миграция на версию 15: company_id в motors (разделение моторов по компаниям)
-        if currentVersion < 15 {
+        // Миграция на версию 16: company_id + income type + category/description
+        if currentVersion < 16 {
             if tableExists("motors") && !tableHasColumns(table: "motors", required: ["company_id"]) {
                 try execute(sql: "ALTER TABLE motors ADD COLUMN company_id TEXT NOT NULL DEFAULT 'default';")
                 try execute(sql: "CREATE INDEX IF NOT EXISTS idx_motors_company_id ON motors(company_id);")
             }
-            try execute(sql: "DELETE FROM schema_version;")
-            try execute(sql: "INSERT INTO schema_version (version) VALUES (15);")
-        }
+            if tableExists("financial_operations") {
+                let needsRecreate = !tableHasColumns(table: "financial_operations", required: ["company_id"])
+                let currentSQL = (try? query(sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='financial_operations';") { stmt in
+                    sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                }.first) ?? ""
+                let missingIncome = !currentSQL.contains("income")
 
-        // Миграция на версию 14: company_id в financial_operations (разделение данных по компаниям)
-        if currentVersion < 14 {
-            if tableExists("financial_operations") && !tableHasColumns(table: "financial_operations", required: ["company_id"]) {
-                try execute(sql: "ALTER TABLE financial_operations ADD COLUMN company_id TEXT NOT NULL DEFAULT 'default';")
-                try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_company_id ON financial_operations(company_id);")
+                if needsRecreate || missingIncome {
+                    let hasCat = tableHasColumns(table: "financial_operations", required: ["category"])
+                    let hasDesc = tableHasColumns(table: "financial_operations", required: ["description"])
+                    let hasCompany = tableHasColumns(table: "financial_operations", required: ["company_id"])
+
+                    try execute(sql: """
+                        CREATE TABLE IF NOT EXISTS financial_operations_v16 (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer', 'income')),
+                            amount TEXT NOT NULL,
+                            payment_method TEXT NOT NULL CHECK(payment_method IN ('cash', 'transfer', 'mixed')),
+                            cash_received TEXT,
+                            change_given TEXT,
+                            account TEXT NOT NULL CHECK(account IN ('cashbox', 'kaspi')),
+                            related_motor_id INTEGER,
+                            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            created_by_user TEXT NOT NULL,
+                            comment TEXT NOT NULL DEFAULT '',
+                            source TEXT NOT NULL DEFAULT '',
+                            details TEXT NOT NULL DEFAULT '',
+                            category TEXT,
+                            description TEXT NOT NULL DEFAULT '',
+                            company_id TEXT NOT NULL DEFAULT 'default',
+                            FOREIGN KEY (related_motor_id) REFERENCES motors(id) ON DELETE SET NULL
+                        );
+                    """)
+                    let catCol = hasCat ? "category" : "NULL"
+                    let descCol = hasDesc ? "description" : "details"
+                    let compCol = hasCompany ? "company_id" : "'default'"
+                    try execute(sql: """
+                        INSERT INTO financial_operations_v16
+                        (id, type, amount, payment_method, cash_received, change_given,
+                         account, related_motor_id, created_at, created_by_user, comment,
+                         source, details, category, description, company_id)
+                        SELECT id, type, amount, payment_method, cash_received, change_given,
+                               account, related_motor_id, created_at, created_by_user, comment,
+                               source, details, \(catCol), \(descCol), \(compCol)
+                        FROM financial_operations;
+                    """)
+                    try execute(sql: "DROP TABLE financial_operations;")
+                    try execute(sql: "ALTER TABLE financial_operations_v16 RENAME TO financial_operations;")
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_type ON financial_operations(type);")
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_account ON financial_operations(account);")
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_created_at ON financial_operations(created_at);")
+                    try execute(sql: "CREATE INDEX IF NOT EXISTS idx_financial_operations_company_id ON financial_operations(company_id);")
+                }
             }
             try execute(sql: "DELETE FROM schema_version;")
-            try execute(sql: "INSERT INTO schema_version (version) VALUES (14);")
+            try execute(sql: "INSERT INTO schema_version (version) VALUES (16);")
         }
 
         if currentVersion < 13 {
@@ -1348,7 +1450,7 @@ nonisolated final class DatabaseService {
             try execute(sql: """
                 CREATE TABLE IF NOT EXISTS financial_operations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer')),
+                    type TEXT NOT NULL CHECK(type IN ('sale', 'refund', 'expense', 'transfer', 'income')),
                     amount TEXT NOT NULL,
                     payment_method TEXT NOT NULL CHECK(payment_method IN ('cash', 'transfer', 'mixed')),
                     cash_received TEXT,
@@ -1360,6 +1462,10 @@ nonisolated final class DatabaseService {
                     comment TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL DEFAULT '',
                     details TEXT NOT NULL DEFAULT '',
+                    category TEXT,
+                    description TEXT NOT NULL DEFAULT '',
+                    cloud_document_id TEXT,
+                    company_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (related_motor_id) REFERENCES motors(id) ON DELETE SET NULL
                 );
             """)
@@ -1374,6 +1480,10 @@ nonisolated final class DatabaseService {
             
             try execute(sql: """
                 CREATE INDEX IF NOT EXISTS idx_financial_operations_created_at ON financial_operations(created_at);
+            """)
+            
+            try execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_financial_operations_company_id ON financial_operations(company_id);
             """)
             
             try execute(sql: """
@@ -1402,6 +1512,14 @@ nonisolated final class DatabaseService {
                     try execute(sql: "ALTER TABLE financial_operations ADD COLUMN description TEXT NOT NULL DEFAULT '';")
                 } catch {
                     // Аналогично, если колонка уже есть – тихо продолжаем
+                }
+            }
+            // cloud_document_id
+            if !tableHasColumns(table: "financial_operations", required: ["cloud_document_id"]) {
+                do {
+                    try execute(sql: "ALTER TABLE financial_operations ADD COLUMN cloud_document_id TEXT;")
+                } catch {
+                    // Колонка уже есть или БД в промежуточном состоянии — продолжаем.
                 }
             }
         }
@@ -2063,8 +2181,8 @@ nonisolated final class DatabaseService {
                 sql: """
                 INSERT INTO financial_operations (
                     type, amount, payment_method, cash_received, change_given,
-                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, company_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, cloud_document_id, company_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 bindings: [
                     .text(type),
@@ -2081,6 +2199,7 @@ nonisolated final class DatabaseService {
                     .text(details),
                     category.map { .text($0) } ?? .textOptional(nil),
                     .text(description.isEmpty ? (details.isEmpty ? "" : details) : description),
+                    cloudRecordId.map { .text($0) } ?? .textOptional(nil),
                     .text(cid)
                 ]
             )
@@ -2113,8 +2232,8 @@ nonisolated final class DatabaseService {
             sql: """
             INSERT INTO financial_operations (
                 type, amount, payment_method, cash_received, change_given,
-                account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, company_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, cloud_document_id, company_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             bindings: [
                 .text(type),
@@ -2131,6 +2250,7 @@ nonisolated final class DatabaseService {
                 .text(details),
                 category.map { .text($0) } ?? .textOptional(nil),
                 .text(description.isEmpty ? (details.isEmpty ? "" : details) : description),
+                cloudRecordId.map { .text($0) } ?? .textOptional(nil),
                 .text(cid)
             ]
         )
@@ -2141,7 +2261,7 @@ nonisolated final class DatabaseService {
     func fetchFinancialOperation(id: Int64, companyId: String? = nil) throws -> FinancialOperation? {
         var sql = """
             SELECT id, type, amount, payment_method, cash_received, change_given,
-                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, cloud_document_id
             FROM financial_operations
             WHERE id = ?
             """
@@ -2174,7 +2294,8 @@ nonisolated final class DatabaseService {
                 source: optionalStringColumn(statement, index: 11) ?? "",
                 details: optionalStringColumn(statement, index: 12) ?? "",
                 category: optionalStringColumn(statement, index: 13),
-                description: optionalStringColumn(statement, index: 14) ?? ""
+                description: optionalStringColumn(statement, index: 14) ?? "",
+                cloudDocumentId: optionalStringColumn(statement, index: 15)
             )
         }.first
     }
@@ -2190,7 +2311,7 @@ nonisolated final class DatabaseService {
         return try queryUnlocked(
             sql: """
             SELECT id, type, amount, payment_method, cash_received, change_given,
-                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+                   account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, cloud_document_id
             FROM financial_operations
             WHERE id = ?;
             """,
@@ -2211,7 +2332,8 @@ nonisolated final class DatabaseService {
                 source: optionalStringColumn(statement, index: 11) ?? "",
                 details: optionalStringColumn(statement, index: 12) ?? "",
                 category: optionalStringColumn(statement, index: 13),
-                description: optionalStringColumn(statement, index: 14) ?? ""
+                description: optionalStringColumn(statement, index: 14) ?? "",
+                cloudDocumentId: optionalStringColumn(statement, index: 15)
             )
         }.first
     }
@@ -2271,7 +2393,7 @@ nonisolated final class DatabaseService {
     func fetchFinancialOperations(filter: FinancialOperationFilter) throws -> [FinancialOperation] {
         var sql = """
         SELECT id, type, amount, payment_method, cash_received, change_given,
-               account, related_motor_id, created_at, created_by_user, comment, source, details, category, description
+               account, related_motor_id, created_at, created_by_user, comment, source, details, category, description, cloud_document_id
         FROM financial_operations
         WHERE 1 = 1
         """
@@ -2341,7 +2463,71 @@ nonisolated final class DatabaseService {
                 source: optionalStringColumn(statement, index: 11) ?? "",
                 details: optionalStringColumn(statement, index: 12) ?? "",
                 category: optionalStringColumn(statement, index: 13),
-                description: optionalStringColumn(statement, index: 14) ?? ""
+                description: optionalStringColumn(statement, index: 14) ?? "",
+                cloudDocumentId: optionalStringColumn(statement, index: 15)
+            )
+        }
+    }
+
+    func updateFinancialOperation(
+        id: Int64,
+        amount: Decimal,
+        account: String,
+        category: String?,
+        description: String,
+        comment: String
+    ) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: """
+                UPDATE financial_operations
+                SET amount = ?, account = ?, category = ?, description = ?, details = ?, comment = ?
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(String(describing: amount)),
+                    .text(account),
+                    category.map { .text($0) } ?? .textOptional(nil),
+                    .text(description),
+                    .text(description),
+                    .text(comment),
+                    .int64(id)
+                ]
+            )
+        }
+    }
+
+    func deleteFinancialOperation(id: Int64) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: "DELETE FROM financial_operations WHERE id = ?;",
+                bindings: [.int64(id)]
+            )
+        }
+    }
+
+    func clearFinancialOperations(companyId: String? = nil) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            if let cid = companyId, !cid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try executeUnlocked(
+                    sql: "DELETE FROM financial_operations WHERE company_id = ?;",
+                    bindings: [.text(cid)]
+                )
+            } else {
+                try executeUnlocked(sql: "DELETE FROM financial_operations;")
+            }
+        }
+    }
+
+    func setFinancialOperationCloudDocumentId(id: Int64, cloudDocumentId: String) throws {
+        try assertNotReadOnly()
+        try queue.sync {
+            try executeUnlocked(
+                sql: "UPDATE financial_operations SET cloud_document_id = ? WHERE id = ?;",
+                bindings: [.text(cloudDocumentId), .int64(id)]
             )
         }
     }
@@ -2423,6 +2609,7 @@ nonisolated final class DatabaseService {
         let details: String
         let category: String?
         let description: String
+        let cloudDocumentId: String?
     }
 }
 

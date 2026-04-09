@@ -8,6 +8,8 @@
 
 import SwiftUI
 import AuthenticationServices
+import CryptoKit
+import Security
 
 #if os(macOS)
 
@@ -19,6 +21,7 @@ struct LoginView: View {
     @State private var password: String = ""
     @State private var confirmPassword: String = ""
     @State private var passwordMismatch: Bool = false
+    @State private var currentNonce: String = ""
     
     private var canSubmit: Bool {
         if isRegistrationMode {
@@ -44,7 +47,7 @@ struct LoginView: View {
             VStack {
                 Spacer()
                 
-                VStack(spacing: 20) {
+                    VStack(spacing: 20) {
                     // Header
                     VStack(spacing: 8) {
                         Text(L10n.Login.appTitle)
@@ -57,13 +60,28 @@ struct LoginView: View {
                     // Card
                     VStack(spacing: 16) {
                         if let errorMessage = authViewModel.errorMessage {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.red)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(.red)
+                                    Text("Не удалось выполнить вход")
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
                                 Text(errorMessage)
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.primary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.red.opacity(0.08))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(Color.red.opacity(0.25), lineWidth: 1)
+                            )
                             .padding(.bottom, 4)
                         }
                         
@@ -74,17 +92,21 @@ struct LoginView: View {
                                     .signIn,
                                     onRequest: { request in
                                         request.requestedScopes = [.fullName, .email]
+                                        let nonce = randomNonceString()
+                                        currentNonce = nonce
+                                        request.nonce = sha256(nonce)
                                     },
                                     onCompletion: { result in
                                         switch result {
                                         case .success(let authResult):
                                             if let credential = authResult.credential as? ASAuthorizationAppleIDCredential {
+                                                let nonce = currentNonce
                                                 Task {
-                                                    await authViewModel.handleAppleSignIn(credential: credential)
+                                                    await authViewModel.handleAppleSignIn(credential: credential, rawNonce: nonce)
                                                 }
                                             }
                                         case .failure(let error):
-                                            authViewModel.setError(L10n.Login.appleError(error.localizedDescription))
+                                            authViewModel.setAppleSignInError(error)
                                         }
                                     }
                                 )
@@ -97,8 +119,10 @@ struct LoginView: View {
                                         await authViewModel.signInWithGoogle()
                                     }
                                 } label: {
-                                    HStack {
-                                        Image(systemName: "g.circle.fill")
+                                    HStack(spacing: 8) {
+                                        Text("G")
+                                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Color(red: 66/255, green: 133/255, blue: 244/255))
                                         Text(L10n.Login.signInGoogle)
                                     }
                                     .frame(maxWidth: .infinity)
@@ -196,6 +220,37 @@ struct LoginView: View {
             authViewModel.clearError()
         }
     }
+}
+
+private func randomNonceString(length: Int = 32) -> String {
+    precondition(length > 0)
+    let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+    var result = ""
+    var remainingLength = length
+
+    while remainingLength > 0 {
+        var randoms: [UInt8] = (0..<16).map { _ in 0 }
+        let errorCode = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+        if errorCode != errSecSuccess {
+            return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+
+        randoms.forEach { random in
+            if remainingLength == 0 {
+                return
+            }
+            if random < charset.count {
+                result.append(charset[Int(random)])
+                remainingLength -= 1
+            }
+        }
+    }
+    return result
+}
+
+private func sha256(_ input: String) -> String {
+    let hashed = SHA256.hash(data: Data(input.utf8))
+    return hashed.map { String(format: "%02x", $0) }.joined()
 }
 
 #endif

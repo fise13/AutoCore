@@ -22,6 +22,9 @@ struct IOSSettingsView: View {
     @State private var localAdvanced: AdvancedSettings
 
     let databaseService: DatabaseService
+    let companyId: String?
+    @State private var showClearAccountingConfirm = false
+    @State private var clearAccountingMessage: String?
 
     init(
         backupService: BackupService,
@@ -29,12 +32,14 @@ struct IOSSettingsView: View {
         settingsService: SettingsService,
         recoveryState: RecoveryState,
         databaseService: DatabaseService
+        , companyId: String? = nil
     ) {
         self.backupService = backupService
         self.featureFlagService = featureFlagService
         self.settingsService = settingsService
         self.recoveryState = recoveryState
         self.databaseService = databaseService
+        self.companyId = companyId
         _viewModel = StateObject(wrappedValue: SettingsViewModel(
             settingsService: settingsService,
             recoveryState: recoveryState,
@@ -46,6 +51,8 @@ struct IOSSettingsView: View {
         _localAdvanced = State(initialValue: settingsService.settings.advanced)
     }
 
+    @AppStorage("themePreference") private var themePreferenceRaw: Int = ThemePreference.system.rawValue
+
     var body: some View {
         ZStack {
             IOSScreenBackground()
@@ -53,12 +60,14 @@ struct IOSSettingsView: View {
                 headerSection
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: Spacing.x3) {
+                        appearanceCard
                         generalCard
                         featuresCard
                         dataCard
                         importExportCard
                         workflowCard
                         advancedCard
+                        accountingDangerCard
                     }
                     .padding(Spacing.x3)
                 }
@@ -77,7 +86,7 @@ struct IOSSettingsView: View {
 
     private var headerSection: some View {
         ZStack(alignment: .topTrailing) {
-            IOSPalette.flowlyBlue
+            IOSPalette.headerGradient
                 .frame(height: 140)
                 .ignoresSafeArea(edges: .top)
             VStack(alignment: .leading, spacing: 4) {
@@ -100,6 +109,47 @@ struct IOSSettingsView: View {
             }
             .padding(.top, 56)
             .padding(.trailing, Spacing.x3)
+        }
+    }
+
+    private var appearanceCard: some View {
+        IOSFlowlyCard {
+            VStack(alignment: .leading, spacing: Spacing.x2) {
+                Text("Внешний вид")
+                    .font(IOSDesign.Typography.subtitle.weight(.semibold))
+                    .foregroundStyle(IOSPalette.textPrimary)
+
+                HStack(spacing: 10) {
+                    ForEach([ThemePreference.system, .light, .dark], id: \.rawValue) { pref in
+                        let isSelected = themePreferenceRaw == pref.rawValue
+                        Button {
+                            IOSHaptics.selection()
+                            withAnimation(IOSMotion.quick) {
+                                themePreferenceRaw = pref.rawValue
+                            }
+                        } label: {
+                            VStack(spacing: 6) {
+                                Image(systemName: pref == .system ? "gear" : pref == .light ? "sun.max.fill" : "moon.fill")
+                                    .font(.system(size: 20))
+                                Text(pref.displayName)
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .foregroundStyle(isSelected ? .white : IOSPalette.textPrimary)
+                            .background(
+                                RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+                                    .fill(isSelected ? IOSPalette.flowlyBlue : IOSPalette.backgroundElevated)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+                                            .stroke(isSelected ? Color.clear : IOSPalette.border, lineWidth: 1)
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
     }
 
@@ -333,6 +383,60 @@ struct IOSSettingsView: View {
                         .foregroundStyle(IOSPalette.textSecondary)
                 }
             }
+        }
+    }
+
+    private var accountingDangerCard: some View {
+        IOSFlowlyCard {
+            VStack(alignment: .leading, spacing: Spacing.x2) {
+                Text("Бухгалтерия")
+                    .font(IOSDesign.Typography.subtitle.weight(.semibold))
+                    .foregroundStyle(IOSPalette.textPrimary)
+
+                Text("Полностью удалит все финансовые операции текущей компании.")
+                    .font(.footnote)
+                    .foregroundStyle(IOSPalette.textSecondary)
+
+                Button {
+                    showClearAccountingConfirm = true
+                } label: {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("Очистить всю бухгалтерию")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .foregroundStyle(.white)
+                    .background(
+                        RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
+                            .fill(IOSPalette.negative)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .confirmationDialog("Очистить всю бухгалтерию?", isPresented: $showClearAccountingConfirm) {
+            Button("Очистить", role: .destructive) {
+                clearAllAccounting()
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Это действие удалит все операции без возможности восстановления.")
+        }
+        .overlay(alignment: .top) {
+            if let clearAccountingMessage {
+                IOSStatusBanner(type: .error, message: clearAccountingMessage, onDismiss: { self.clearAccountingMessage = nil })
+                    .padding(.horizontal, Spacing.x3)
+            }
+        }
+    }
+
+    private func clearAllAccounting() {
+        do {
+            try databaseService.clearFinancialOperations(companyId: companyId)
+            clearAccountingMessage = "Бухгалтерия очищена"
+        } catch {
+            clearAccountingMessage = "Не удалось очистить бухгалтерию: \(error.localizedDescription)"
         }
     }
 }

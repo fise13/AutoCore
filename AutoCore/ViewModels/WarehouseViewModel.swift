@@ -189,6 +189,21 @@ final class WarehouseViewModel: ObservableObject {
         }
     }
 
+    func deleteItem(itemId: String) {
+        errorMessage = nil
+        Task {
+            do {
+                try await inventoryRepository.delete(itemId)
+                if selectedItemID == itemId {
+                    selectedItemID = nil
+                }
+                refresh()
+            } catch {
+                errorMessage = "Ошибка удаления товара: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func importFromCSV(url: URL) {
         errorMessage = nil
         Task {

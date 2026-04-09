@@ -42,10 +42,15 @@ final class AppState: ObservableObject {
     private func handleAuthStateChange(_ state: AuthState) {
         switch state {
         case .unauthenticated:
+            let hadBoundUser = boundUserId != nil
             boundUserId = nil
             tearDownDatabaseStack()
             #if os(iOS)
-            WidgetDataStore.clear()
+            // Очищаем виджетные данные только при реальном logout (когда ранее был авторизованный пользователь),
+            // чтобы не терять актуальные значения при холодном старте до восстановления сессии.
+            if hadBoundUser {
+                WidgetDataStore.clear()
+            }
             #endif
         case .authenticating:
             break

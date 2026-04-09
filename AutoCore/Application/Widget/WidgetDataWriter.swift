@@ -19,6 +19,10 @@ struct TodaySpendingPayload: Codable {
 
 enum WidgetDataWriter {
     static let appGroupId = "group.kz.autocore.accounting"
+    static let widgetKinds = [
+        "AutoCoreAccountingWidget",
+        "AutoCoreBalanceWidget"
+    ]
 
     struct Payload: Codable {
         let cashBalance: Double
@@ -50,7 +54,14 @@ enum WidgetDataWriter {
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         defaults.set(data, forKey: "widgetData")
+        // Legacy compatibility keys for old widget readers.
+        defaults.set(NSDecimalNumber(decimal: cashBalance), forKey: "cashBalance")
+        defaults.set(NSDecimalNumber(decimal: kaspiBalance), forKey: "kaspiBalance")
+        defaults.set(Date(), forKey: "updatedAt")
         defaults.synchronize()
+        widgetKinds.forEach { kind in
+            WidgetKit.WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
         WidgetKit.WidgetCenter.shared.reloadAllTimelines()
     }
 }

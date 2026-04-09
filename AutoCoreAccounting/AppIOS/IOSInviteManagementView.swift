@@ -59,6 +59,7 @@ struct IOSInviteManagementView: View {
                                             .tracking(2)
                                         Button {
                                             UIPasteboard.general.string = code
+                                            IOSHaptics.notification(.success)
                                         } label: {
                                             Label("Скопировать", systemImage: "doc.on.doc")
                                                 .frame(maxWidth: .infinity)
@@ -66,12 +67,12 @@ struct IOSInviteManagementView: View {
                                         .buttonStyle(IOSSecondaryButtonStyle())
                                     }
                                 }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                             }
 
                             if let error = viewModel.errorMessage {
-                                Text(error)
-                                    .font(.footnote)
-                                    .foregroundStyle(IOSPalette.negative)
+                                IOSStatusBanner(type: .error, message: error)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
                             }
 
                             Button {

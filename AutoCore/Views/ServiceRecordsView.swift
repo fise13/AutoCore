@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 #if os(macOS)
 
@@ -15,6 +16,7 @@ struct ServiceRecordsView: View {
     let onCellSave: ((Int64, String, String) -> Void)?
     
     @StateObject private var editViewModel = InlineEditViewModel()
+    @StateObject private var tableViewModel = ServiceRecordsTableViewModel()
     
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -23,44 +25,9 @@ struct ServiceRecordsView: View {
         return formatter
     }()
     
-    // Объединяем старые ServiceRecord и новые SpecificRecord для отображения
-    private var allRecords: [RecordDisplayItem] {
-        var items: [RecordDisplayItem] = []
-        
-        // Старые записи из service_records
-        for record in records {
-            items.append(RecordDisplayItem.fromServiceRecord(record))
-        }
-        
-        // Новые записи из specific_records
-        for record in specificRecords {
-            items.append(RecordDisplayItem.fromSpecificRecord(record))
-        }
-        
-        return items
-    }
-    
-    // Собираем все уникальные поля из записей для создания динамических колонок
-    private var allFieldNames: [String] {
-        var fieldSet = Set<String>()
-        
-        // Собираем поля из specific_records (игнорируем служебные)
-        for record in specificRecords {
-            for key in record.data.keys {
-                // Игнорируем служебные поля
-                if !key.hasPrefix("_") {
-                    fieldSet.insert(key)
-                }
-            }
-        }
-        
-        // Сортируем по алфавиту для стабильного порядка
-        return Array(fieldSet).sorted()
-    }
-    
     var body: some View {
         VStack(spacing: 0) {
-            if allRecords.isEmpty && !isLoading {
+            if tableViewModel.allRecords.isEmpty && !isLoading {
                 EmptyStateView(
                     icon: "doc.text.magnifyingglass",
                     title: totalCount == 0 ? "Специфичных данных пока нет" : "Ничего не найдено",
@@ -82,7 +49,7 @@ struct ServiceRecordsView: View {
                 .padding(.vertical, 8)
                 
                 // Создаем динамическую таблицу с колонками на основе полей
-                if !allFieldNames.isEmpty {
+                if !tableViewModel.allFieldNames.isEmpty {
                     // Для специфичных записей - динамические колонки с редактированием
                     editableDynamicTable
                 } else {
@@ -98,6 +65,15 @@ struct ServiceRecordsView: View {
                 onSearchTextChange(newValue)
             }
         ), prompt: "Поиск по номеру двигателя, данным, листу")
+        .onAppear {
+            tableViewModel.rebuild(records: records, specificRecords: specificRecords)
+        }
+        .onChange(of: records) { _, _ in
+            tableViewModel.rebuild(records: records, specificRecords: specificRecords)
+        }
+        .onChange(of: specificRecords) { _, _ in
+            tableViewModel.rebuild(records: records, specificRecords: specificRecords)
+        }
     }
     
     private func formatDate(_ date: Date) -> String {
@@ -107,9 +83,9 @@ struct ServiceRecordsView: View {
     // Редактируемая динамическая таблица - упрощенная версия без ForEach
     @ViewBuilder
     private var editableDynamicTable: some View {
-        let fieldsToShow = Array(allFieldNames.prefix(5)) // Ограничиваем до 5 колонок для упрощения компиляции
+        let fieldsToShow = Array(tableViewModel.allFieldNames.prefix(5))
         
-        Table(allRecords) {
+        Table(tableViewModel.allRecords) {
             TableColumn("Номер двигателя") { item in
                 makeEditableCell(item: item, fieldKey: "НОМЕР ДВИГАТЕЛЯ", value: item.serialCode, field: .serialCode)
             }
@@ -186,13 +162,6 @@ struct ServiceRecordsView: View {
             value: value,
             editingCell: editViewModel.editingCell,
             selectedCell: editViewModel.selectedCell,
-            editingValue: editViewModel.editingValue,
-            onEditingValueChange: { newValue in
-                // Обновляем асинхронно, чтобы избежать "Publishing changes from within view updates"
-                DispatchQueue.main.async {
-                    editViewModel.editingValue = newValue
-                }
-            },
             onSave: { newValue in
                 onCellSave?(item.id, fieldKey, newValue)
             },
@@ -211,7 +180,7 @@ struct ServiceRecordsView: View {
     // Стандартная таблица для старых service_records
     @ViewBuilder
     private var legacyTable: some View {
-        Table(allRecords) {
+        Table(tableViewModel.allRecords) {
             TableColumn("Номер двигателя") { item in
                 Text(item.serialCode)
             }
@@ -251,8 +220,6 @@ private struct EditableSpecificRecordCell: View {
     let value: String
     let editingCell: EditingCell?
     let selectedCell: SelectedCell?
-    let editingValue: String?
-    let onEditingValueChange: (String) -> Void
     
     let onSave: (String) -> Void
     let onStartEditing: () -> Void
@@ -281,12 +248,7 @@ private struct EditableSpecificRecordCell: View {
                     .padding(.vertical, 2)
                     .background(DSColors.background)
                     .onAppear {
-                        // Инициализируем локальное значение при начале редактирования
-                        localEditingValue = editingValue ?? value
-                    }
-                    .onChange(of: localEditingValue) { newValue in
-                        // Синхронизируем изменения асинхронно
-                        onEditingValueChange(newValue)
+                        localEditingValue = value
                     }
                     .onSubmit {
                         onSave(localEditingValue)
@@ -326,19 +288,38 @@ private struct EditableSpecificRecordCell: View {
     }
 }
 
+@MainActor
+private final class ServiceRecordsTableViewModel: ObservableObject {
+    @Published private(set) var allRecords: [RecordDisplayItem] = []
+    @Published private(set) var allFieldNames: [String] = []
+
+    func rebuild(records: [ServiceRecord], specificRecords: [DatabaseService.SpecificRecord]) {
+        var items: [RecordDisplayItem] = []
+        items.reserveCapacity(records.count + specificRecords.count)
+        items.append(contentsOf: records.map(RecordDisplayItem.fromServiceRecord))
+        items.append(contentsOf: specificRecords.map(RecordDisplayItem.fromSpecificRecord))
+        allRecords = items
+
+        var fieldSet = Set<String>()
+        for record in specificRecords {
+            for key in record.data.keys where !key.hasPrefix("_") {
+                fieldSet.insert(key)
+            }
+        }
+        allFieldNames = Array(fieldSet).sorted()
+    }
+}
+
 #endif
+
 // Объединенная модель для отображения записей
 private struct RecordDisplayItem: Identifiable {
     let id: Int64
     let serialCode: String
     let sheetName: String
     let dataFields: [(key: String, value: String)]
+    let data: [String: String]
     let date: Date
-    
-    // Оптимизированный словарь для быстрого доступа O(1) вместо O(n)
-    var data: [String: String] {
-        Dictionary(uniqueKeysWithValues: dataFields)
-    }
     
     static func fromServiceRecord(_ record: ServiceRecord) -> RecordDisplayItem {
         RecordDisplayItem(
@@ -348,6 +329,10 @@ private struct RecordDisplayItem: Identifiable {
             dataFields: [
                 ("Категория", record.category),
                 ("Заметки", record.notes)
+            ],
+            data: [
+                "Категория": record.category,
+                "Заметки": record.notes
             ],
             date: record.recordDate
         )
@@ -378,6 +363,7 @@ private struct RecordDisplayItem: Identifiable {
             serialCode: serialCode,
             sheetName: sheetName,
             dataFields: dataFields,
+            data: Dictionary(uniqueKeysWithValues: dataFields),
             date: record.createdAt
         )
     }

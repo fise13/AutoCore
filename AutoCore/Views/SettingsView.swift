@@ -13,19 +13,22 @@ struct SettingsView: View {
     @State private var isAdvancedExpanded = false
     
     let databaseService: DatabaseService
+    let companyId: String?
     
     init(
         backupService: BackupService,
         featureFlagService: FeatureFlagService,
         settingsService: SettingsService,
         recoveryState: RecoveryState,
-        databaseService: DatabaseService
+        databaseService: DatabaseService,
+        companyId: String? = nil
     ) {
         self.backupService = backupService
         self.featureFlagService = featureFlagService
         self.settingsService = settingsService
         self.recoveryState = recoveryState
         self.databaseService = databaseService
+        self.companyId = companyId
         _viewModel = StateObject(wrappedValue: SettingsViewModel(
             settingsService: settingsService,
             recoveryState: recoveryState,
@@ -85,7 +88,7 @@ struct SettingsView: View {
         Group {
             switch selectedSection {
             case .general:
-                GeneralSettingsView(viewModel: viewModel)
+                GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
             case .features:
                 FeatureFlagsSettingsView(viewModel: viewModel)
             case .data:
@@ -109,7 +112,7 @@ struct SettingsView: View {
     private func settingsDetailForSection(_ section: SettingsViewModel.SettingsSection) -> some View {
         switch section {
         case .general:
-            GeneralSettingsView(viewModel: viewModel)
+            GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
         case .features:
             FeatureFlagsSettingsView(viewModel: viewModel)
         case .data:
@@ -132,6 +135,10 @@ struct SettingsView: View {
 
 private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
+    let databaseService: DatabaseService
+    let companyId: String?
+    @State private var showClearAccountingConfirm = false
+    @State private var statusMessage: String?
     
     var body: some View {
         ScrollView {
@@ -154,8 +161,44 @@ private struct GeneralSettingsView: View {
                         Text("Все системы работают нормально")
                     }
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        showClearAccountingConfirm = true
+                    } label: {
+                        Label("Очистить всю бухгалтерию", systemImage: "trash")
+                    }
+                } header: {
+                    Text("Бухгалтерия")
+                } footer: {
+                    Text("Удаляет все финансовые операции текущей компании.")
+                }
+
+                if let statusMessage {
+                    Section {
+                        Text(statusMessage)
+                            .foregroundColor(statusMessage.contains("Не удалось") ? .red : .green)
+                    }
+                }
             }
             .padding()
+            .confirmationDialog("Очистить всю бухгалтерию?", isPresented: $showClearAccountingConfirm) {
+                Button("Очистить", role: .destructive) {
+                    clearAllAccounting()
+                }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Это действие удалит все операции без возможности восстановления.")
+            }
+        }
+    }
+
+    private func clearAllAccounting() {
+        do {
+            try databaseService.clearFinancialOperations(companyId: companyId)
+            statusMessage = "Бухгалтерия очищена"
+        } catch {
+            statusMessage = "Не удалось очистить бухгалтерию: \(error.localizedDescription)"
         }
     }
 }

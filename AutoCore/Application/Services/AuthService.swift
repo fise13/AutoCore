@@ -78,8 +78,10 @@ protocol AuthService: AnyObject {
     func signUp(email: String, password: String) async throws -> UserEntity
     
     /// Вход через Apple ID (Sign in with Apple)
-    /// - Parameter credential: ASAuthorizationAppleIDCredential из SignInWithAppleButton
-    func signInWithApple(credential: ASAuthorizationAppleIDCredential) async throws -> UserEntity
+    /// - Parameters:
+    ///   - credential: ASAuthorizationAppleIDCredential из SignInWithAppleButton
+    ///   - rawNonce: исходный nonce, который использовался при формировании request.nonce
+    func signInWithApple(credential: ASAuthorizationAppleIDCredential, rawNonce: String) async throws -> UserEntity
     
     /// Вход через Google
     /// - Returns: Async throwing результат операции
@@ -107,7 +109,7 @@ protocol AuthService: AnyObject {
 
 extension AuthService {
     /// Реализация по умолчанию для Sign in with Apple — провайдер может не поддерживать этот тип входа.
-    func signInWithApple(credential: ASAuthorizationAppleIDCredential) async throws -> UserEntity {
+    func signInWithApple(credential: ASAuthorizationAppleIDCredential, rawNonce: String) async throws -> UserEntity {
         throw AuthError.unknown("Вход через Apple ID не поддерживается для текущего способа аутентификации")
     }
     

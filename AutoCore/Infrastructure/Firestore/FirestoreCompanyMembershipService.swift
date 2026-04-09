@@ -7,10 +7,12 @@
 
 import Foundation
 import FirebaseFirestore
+import FirebaseFunctions
 
 final class FirestoreCompanyMembershipService: CompanyMembershipService {
     private let db = Firestore.firestore()
     private let inviteService: InviteService
+    private let functions = Functions.functions()
     
     init(inviteService: InviteService) {
         self.inviteService = inviteService
@@ -21,18 +23,27 @@ final class FirestoreCompanyMembershipService: CompanyMembershipService {
         guard !code.isEmpty else {
             throw AuthError.unknown("Укажите код приглашения")
         }
-        let invite = try await inviteService.validateInviteCode(code)
-        
-        // Обновляем документ пользователя
-        let userRef = db.collection("users").document(userId)
-        try await userRef.updateData([
-            "companyId": invite.companyId,
-            "role": invite.role.rawValue
-        ])
-        try await inviteService.markInviteUsed(invite.id)
-        
-        // После обновления документа пользователя клиент должен принудительно обновить токен:
-        // Auth.auth().currentUser?.getIDTokenResult(true)
+
+        // IMPORTANT:
+        // Ранее здесь был прямой update в invites/{id}, который часто падал по rules.
+        // Теперь всегда используем Cloud Function, чтобы join работал стабильно.
+        do {
+            let result = try await functions.httpsCallable("joinCompanyWithInvite").call(["inviteCode": code])
+            guard let data = result.data as? [String: Any],
+                  (data["success"] as? Bool) == true else {
+                throw AuthError.unknown("Не удалось присоединиться к компании")
+            }
+        } catch let error as NSError {
+            if error.domain == FunctionsErrorDomain {
+                if let details = error.userInfo[FunctionsErrorDetailsKey] as? String, !details.isEmpty {
+                    throw AuthError.unknown(details)
+                }
+                if let msg = error.userInfo["message"] as? String, !msg.isEmpty {
+                    throw AuthError.unknown(msg)
+                }
+            }
+            throw AuthError.unknown(error.localizedDescription)
+        }
     }
 
     private func normalizeInviteCode(_ input: String) -> String {

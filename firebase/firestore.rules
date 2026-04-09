@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // -------------------------
-    // Common helpers
+    // Helpers
     // -------------------------
     function isSignedIn() {
       return request.auth != null;
@@ -14,18 +14,48 @@ service cloud.firestore {
     }
 
     function userDoc() {
-      let ref = userRef();
-      return exists(ref) ? get(ref).data : null;
+      return isSignedIn() && exists(userRef()) ? get(userRef()).data : null;
     }
 
-    function companyRef(companyId) {
-      return /databases/$(database)/documents/companies/$(companyId);
+    function tokenCompanyId() {
+      return isSignedIn() ? request.auth.token.companyId : null;
+    }
+
+    function tokenRole() {
+      return isSignedIn() ? request.auth.token.role : null;
     }
 
     function userCompanyId() {
-      return request.auth.token.companyId != null && request.auth.token.companyId != ""
-        ? request.auth.token.companyId
+      return tokenCompanyId() != null && tokenCompanyId() != ""
+        ? tokenCompanyId()
         : (userDoc() != null ? userDoc().companyId : null);
+    }
+
+    function userRole() {
+      return tokenRole() != null ? tokenRole() : (userDoc() != null ? userDoc().role : null);
+    }
+
+    function inRole(allowed) {
+      let role = userRole();
+      return role != null && role in allowed;
+    }
+
+    function isOwnerOrAdmin() {
+      return inRole(['owner', 'admin']);
+    }
+
+    function canWriteFinancial() {
+      // Финансы может писать любой участник своей компании.
+      // Это снимает блокировки, когда role/claims ещё не успели обновиться.
+      return hasCompany();
+    }
+
+    function canWriteFinancialForCompany(companyId) {
+      return companyId != null
+        && (
+          (canWriteFinancial() && canAccessCompanyDoc(companyId))
+          || isOwnerOfCompany(companyId)
+        );
     }
 
     function hasCompany() {
@@ -33,97 +63,70 @@ service cloud.firestore {
       return isSignedIn() && cid != null && cid != "";
     }
 
-    function isRoleIn(allowed) {
-      let tokenRole = request.auth.token.role;
-      let docRole = userDoc() != null ? userDoc().role : null;
-      return (tokenRole != null && tokenRole in allowed) || (docRole != null && docRole in allowed);
-    }
-
-    function isOwnerOrAdmin() {
-      return isRoleIn(['owner', 'admin']);
-    }
-
-    function canWriteFinancial() {
-      return isRoleIn(['owner', 'admin', 'accountant', 'employee']);
+    function sameCompany(companyId) {
+      return hasCompany() && companyId != null && companyId == userCompanyId();
     }
 
     function sameCompanyDoc() {
-      return hasCompany()
-        && resource.data.companyId != null
-        && resource.data.companyId == userCompanyId();
+      return sameCompany(resource.data.companyId);
     }
 
     function sameCompanyRequest() {
-      return hasCompany()
-        && request.resource.data.companyId != null
-        && request.resource.data.companyId == userCompanyId();
+      return sameCompany(request.resource.data.companyId);
     }
 
-    function companyOwnerIsCurrentUser(companyId) {
-      return companyId != null
-        && companyId != ""
-        && exists(companyRef(companyId))
-        && get(companyRef(companyId)).data.ownerId == request.auth.uid;
+    function companyOwner(companyId) {
+      let cref = /databases/$(database)/documents/companies/$(companyId);
+      return companyId != null && companyId != "" && exists(cref) ? get(cref).data.ownerId : null;
     }
 
-    function canReadCompanyMembers(companyId) {
+    function isOwnerOfCompany(companyId) {
+      return isSignedIn() && companyOwner(companyId) == request.auth.uid;
+    }
+
+    function canReadByCompanyDoc(companyId) {
+      // Fallback for cases when custom claims are stale but users/{uid}.companyId is already updated.
       return isSignedIn()
         && companyId != null
-        && companyId != ""
-        && (
-          companyId == userCompanyId() && isOwnerOrAdmin()
-          || companyOwnerIsCurrentUser(companyId)
-        );
+        && exists(userRef())
+        && get(userRef()).data.companyId == companyId;
     }
 
-    function companyMatchesForRead(docCompanyId) {
-      return hasCompany() && docCompanyId != null && docCompanyId == userCompanyId();
+    function canAccessCompanyDoc(companyId) {
+      return sameCompany(companyId) || canReadByCompanyDoc(companyId);
     }
 
-    function companyMatchesForWrite(docCompanyId) {
-      return hasCompany() && docCompanyId != null && docCompanyId == userCompanyId();
-    }
-
-    function canManageInviteByRequest() {
-      return isSignedIn()
-        && request.resource.data.companyId != null
-        && request.resource.data.companyId == userCompanyId()
-        && isOwnerOrAdmin();
-    }
-
-    function canManageInviteByResource() {
-      return isSignedIn()
-        && resource.data.companyId != null
-        && resource.data.companyId == userCompanyId()
-        && isOwnerOrAdmin();
+    function canWriteCompanyDoc(companyId) {
+      return canAccessCompanyDoc(companyId);
     }
 
     // -------------------------
     // users/{userId}
     // -------------------------
     match /users/{userId} {
-      allow read: if isSignedIn() && (
-        request.auth.uid == userId
-        || canReadCompanyMembers(resource.data.companyId)
-      );
+      // Self read/write always allowed.
+      allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
 
-      // User can create/update/delete only own profile doc.
-      allow create, update, delete: if isSignedIn() && request.auth.uid == userId;
+      // Any user inside the same company can read member profiles.
+      // This is required for company members list screen.
+      allow read: if isSignedIn()
+        && resource.data.companyId != null
+        && canAccessCompanyDoc(resource.data.companyId);
     }
 
     // -------------------------
     // companies/{companyId}
     // -------------------------
     match /companies/{companyId} {
+      // Onboarding create (including "default"): ownerId must be current user.
       allow create: if isSignedIn()
         && request.resource.data.ownerId == request.auth.uid;
 
-      allow read: if hasCompany()
-        && companyId == userCompanyId();
+      // IMPORTANT for first login:
+      // allow reading company doc if user is owner, even before companyId appears in users/{uid}.
+      allow read: if sameCompany(companyId) || isOwnerOfCompany(companyId);
 
-      allow update, delete: if hasCompany()
-        && companyId == userCompanyId()
-        && isOwnerOrAdmin();
+      allow update, delete: if sameCompany(companyId) && isOwnerOrAdmin();
     }
 
     // -------------------------
@@ -138,14 +141,20 @@ service cloud.firestore {
     // invites/{inviteId}
     // -------------------------
     match /invites/{inviteId} {
+      // IMPORTANT:
+      // join flow queries invites by code (whereField("code", isEqualTo: ...)).
+      // Firestore rejects query if rules could deny any potential match.
+      // To keep invite validation working reliably, allow read for signed-in users.
       allow read: if isSignedIn();
 
-      allow create: if canManageInviteByRequest();
-      allow delete: if canManageInviteByResource();
+      // Only owner/admin of company can create/delete invites.
+      allow create: if sameCompanyRequest() && isOwnerOrAdmin();
+      allow delete: if sameCompanyDoc() && isOwnerOrAdmin();
 
-      // Owner/admin can update invite in own company.
-      // Also allow marking invite as used (join flow).
-      allow update: if canManageInviteByRequest()
+      // Owner/admin can edit invite in same company.
+      // Join-flow update: any signed-in user may mark invite as used once.
+      // Kept intentionally permissive for compatibility with legacy invite documents.
+      allow update: if (sameCompanyRequest() && isOwnerOrAdmin())
         || (
           isSignedIn()
           && resource.data.used != true
@@ -154,73 +163,101 @@ service cloud.firestore {
     }
 
     // -------------------------
-    // Financial collections (доход/расход, списание, пополнение)
+    // Financial collections
     // -------------------------
-    // Для create/update/delete нужны companyId и role в users/{uid} (после создания компании на iOS/онбординга).
-    // canReadByCompanyDoc — явная проверка users/{uid}.companyId (fallback при расхождении userDoc/userCompanyId).
     match /financialOperations/{operationId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create: if (canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId)) && canWriteFinancial();
-      allow update, delete: if (canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId)) && canWriteFinancial();
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteFinancialForCompany(request.resource.data.companyId);
+      allow update: if canWriteFinancialForCompany(resource.data.companyId)
+        && request.resource.data.companyId == resource.data.companyId;
+      allow delete: if canWriteFinancialForCompany(resource.data.companyId);
     }
 
+    // Keep legacy collection with same restrictions as financialOperations.
     match /operations/{operationId} {
-      allow read: if companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteFinancialForCompany(request.resource.data.companyId);
+      allow update: if canWriteFinancialForCompany(resource.data.companyId)
+        && request.resource.data.companyId == resource.data.companyId;
+      allow delete: if canWriteFinancialForCompany(resource.data.companyId);
     }
 
     match /accounts/{accountId} {
-      allow read: if companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if companyMatchesForWrite(request.resource.data.companyId);
-    }
-
-    // Явная проверка по users/{uid}.companyId (без userDoc/userCompanyId).
-    function canReadByCompanyDoc(docCompanyId) {
-      return isSignedIn() && docCompanyId != null && exists(userRef())
-        && get(userRef()).data.get('companyId', null) == docCompanyId;
-    }
-    function canWriteByCompanyDoc(docCompanyId) {
-      return isSignedIn() && docCompanyId != null && exists(userRef())
-        && get(userRef()).data.get('companyId', null) == docCompanyId;
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
     // -------------------------
-    // Engine / Motor catalog
+    // Catalog / Warehouse / Docs
     // -------------------------
     match /engines/{engineId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
     match /motors/{motorId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
     match /brands/{brandId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
-    // -------------------------
-    // Warehouse module
-    // -------------------------
     match /inventoryItems/{itemId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
     match /inventoryMovements/{movementId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
+    }
+
+    match /documents/{documentId} {
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow update: if canWriteCompanyDoc(request.resource.data.companyId);
+      allow delete: if canAccessCompanyDoc(resource.data.companyId);
     }
 
     // -------------------------
-    // documents (сканы накладных и т.п.)
+    // Audit log (append-only)
     // -------------------------
-    match /documents/{documentId} {
-      allow read: if canReadByCompanyDoc(resource.data.companyId) || companyMatchesForRead(resource.data.companyId);
-      allow create, update, delete: if canWriteByCompanyDoc(request.resource.data.companyId) || companyMatchesForWrite(request.resource.data.companyId);
+    match /auditLog/{logId} {
+      allow read: if canAccessCompanyDoc(resource.data.companyId);
+      allow create: if isSignedIn()
+        && request.resource.data.companyId != null
+        && canWriteCompanyDoc(request.resource.data.companyId)
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.timestamp is timestamp;
+      allow update, delete: if false;
+    }
+
+    // -------------------------
+    // Notifications
+    // -------------------------
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && isOwnerOrAdmin()
+        && request.resource.data.companyId == userCompanyId();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn()
+        && (resource.data.userId == request.auth.uid || isOwnerOrAdmin());
     }
 
     // -------------------------

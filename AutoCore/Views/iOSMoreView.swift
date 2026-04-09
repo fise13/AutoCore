@@ -38,7 +38,7 @@ struct iOSMoreView: View {
 
     private var flowlyHeaderSection: some View {
         ZStack(alignment: .topLeading) {
-            IOSPalette.flowlyBlue
+            IOSPalette.headerGradient
                 .frame(height: 140)
                 .ignoresSafeArea(edges: .top)
             VStack(alignment: .leading, spacing: 4) {

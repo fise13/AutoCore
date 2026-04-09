@@ -21,6 +21,7 @@ import AppKit
 final class FirebaseAuthService: AuthService {
     private let auth = Auth.auth()
     private let db = Firestore.firestore()
+    private let logger = LoggingService.shared
     
     private(set) var currentUser: UserEntity?
     private var authStateContinuation: AsyncStream<AuthState>.Continuation?
@@ -75,19 +76,30 @@ final class FirebaseAuthService: AuthService {
     
     // MARK: - Sign in with Apple
     
-    func signInWithApple(credential: ASAuthorizationAppleIDCredential) async throws -> UserEntity {
+    func signInWithApple(credential: ASAuthorizationAppleIDCredential, rawNonce: String) async throws -> UserEntity {
         guard let tokenData = credential.identityToken,
               let idToken = String(data: tokenData, encoding: .utf8) else {
-            throw AuthError.unknown("Не удалось получить токен Apple ID")
+            logger.error("Apple Sign In: missing identityToken from credential", correlationID: nil)
+            throw AuthError.unknown("Не удалось получить безопасный токен Apple ID. Повторите попытку.")
         }
-        
-        let firebaseCredential = OAuthProvider.appleCredential(withIDToken: idToken, rawNonce: "", fullName: credential.fullName)
+        guard !rawNonce.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.error("Apple Sign In: empty rawNonce passed to signInWithApple", correlationID: nil)
+            throw AuthError.unknown("Не удалось подготовить безопасный вход через Apple. Попробуйте ещё раз.")
+        }
+
+        let firebaseCredential = OAuthProvider.appleCredential(
+            withIDToken: idToken,
+            rawNonce: rawNonce,
+            fullName: credential.fullName
+        )
         
         do {
             let result = try await auth.signIn(with: firebaseCredential)
             return try await loadUserEntity(for: result.user)
         } catch {
-            throw mapAuthError(error)
+            let mapped = mapAuthError(error)
+            logger.error("Apple Sign In failed", error: error, correlationID: nil)
+            throw mapped
         }
     }
     
@@ -232,10 +244,25 @@ final class FirebaseAuthService: AuthService {
         if let data = snapshot.data() {
             let name = (data["name"] as? String) ?? (user.displayName ?? "")
             let email = (data["email"] as? String) ?? (user.email ?? "")
-            let companyId = data["companyId"] as? String
-            let roleRaw = data["role"] as? String ?? UserRole.viewer.rawValue
-            let role = UserRole(rawValue: roleRaw) ?? .viewer
+            var companyId = data["companyId"] as? String
+            var roleRaw = data["role"] as? String ?? UserRole.viewer.rawValue
+            var role = UserRole(rawValue: roleRaw) ?? .viewer
             let createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
+
+            // Legacy fix:
+            // старые owner-пользователи могли быть без role/companyId в users/{uid}.
+            // Если текущий uid является owner компании — самовосстанавливаем профиль.
+            let needsOwnerRepair = (companyId == nil || companyId == "") || role == .viewer
+            if needsOwnerRepair,
+               let ownedCompanyId = try await findOwnedCompanyId(for: user.uid) {
+                companyId = ownedCompanyId
+                role = .owner
+                roleRaw = UserRole.owner.rawValue
+                try await docRef.setData([
+                    "companyId": ownedCompanyId,
+                    "role": UserRole.owner.rawValue
+                ], merge: true)
+            }
             
             userDoc = UserDocument(
                 id: snapshot.documentID,
@@ -282,6 +309,14 @@ final class FirebaseAuthService: AuthService {
         authStateContinuation?.yield(.authenticated(entity))
         return entity
     }
+
+    private func findOwnedCompanyId(for userId: String) async throws -> String? {
+        let snapshot = try await db.collection("companies")
+            .whereField("ownerId", isEqualTo: userId)
+            .limit(to: 1)
+            .getDocuments()
+        return snapshot.documents.first?.documentID
+    }
     
     private func handleAuthStateChange(user: FirebaseAuth.User?) async {
         if let user {
@@ -301,6 +336,7 @@ final class FirebaseAuthService: AuthService {
         let nsError = error as NSError
         guard nsError.domain == AuthErrorDomain,
               let code = AuthErrorCode(rawValue: nsError.code) else {
+            // Не Firebase-ошибка (например, низкоуровневая ошибка сети или конфигурации)
             return .unknown(error.localizedDescription)
         }
         
@@ -314,11 +350,19 @@ final class FirebaseAuthService: AuthService {
         case .weakPassword:
             return .weakPassword
         case .networkError:
-            return .networkError(error.localizedDescription)
+            return .networkError("Проблема с подключением к сети. Проверьте интернет и попробуйте снова.")
         case .userDisabled:
-            return .unknown("Аккаунт отключен")
+            return .unknown("Аккаунт отключен. Обратитесь в поддержку.")
         case .requiresRecentLogin:
             return .requiresRecentLogin
+        case .credentialAlreadyInUse:
+            return .unknown("Учётная запись уже привязана к другому способу входа. Попробуйте войти через тот же провайдер, что и раньше.")
+        case .invalidCredential:
+            return .unknown("Данные входа устарели или недействительны. Повторите попытку входа.")
+        case .tooManyRequests:
+            return .unknown("Слишком много попыток входа. Подождите немного и попробуйте снова.")
+        case .internalError:
+            return .unknown("Временная ошибка сервиса авторизации. Попробуйте позже.")
         default:
             return .unknown(error.localizedDescription)
         }

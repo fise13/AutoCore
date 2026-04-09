@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.wise.AutoCoreAccounting</string>
+		<string>group.kz.autocore.accounting</string>
 	</array>
 </dict>
 </plist>

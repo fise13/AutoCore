@@ -18,6 +18,36 @@
             endingLineNumber = "120"
             landmarkName = "SettingsView"
             landmarkType = "14">
+            <Locations>
+               <Location
+                  uuid = "BBE3D8BA-DED8-480B-85C3-9623340ABBEC - 12046d7fe784ab91"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "AutoCore.SettingsView.settingsDetailForSection(AutoCore.SettingsViewModel.SettingsSection) -&gt; some"
+                  moduleName = "AutoCore.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/victor/Desktop/AutoCore/AutoCore/Views/SettingsView.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "120"
+                  endingLineNumber = "120">
+               </Location>
+               <Location
+                  uuid = "BBE3D8BA-DED8-480B-85C3-9623340ABBEC - 188e7d76234d5685"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "AutoCoreAccounting.SettingsView.settingsDetailForSection(AutoCoreAccounting.SettingsViewModel.SettingsSection) -&gt; some"
+                  moduleName = "AutoCoreAccounting.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/victor/Desktop/AutoCore/AutoCore/Views/SettingsView.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "120"
+                  endingLineNumber = "120">
+               </Location>
+            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

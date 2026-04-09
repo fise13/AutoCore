@@ -137,12 +137,13 @@ final class AuthViewModel: ObservableObject {
     }
     
     /// Вход через Apple ID (Sign in with Apple)
-    func handleAppleSignIn(credential: ASAuthorizationAppleIDCredential) async {
+    func handleAppleSignIn(credential: ASAuthorizationAppleIDCredential, rawNonce: String) async {
         errorMessage = nil
         let credential = credential
-        lastRetryAction = { [weak self] in await self?.handleAppleSignIn(credential: credential) }
+        let nonce = rawNonce
+        lastRetryAction = { [weak self] in await self?.handleAppleSignIn(credential: credential, rawNonce: nonce) }
         do {
-            _ = try await authService.signInWithApple(credential: credential)
+            _ = try await authService.signInWithApple(credential: credential, rawNonce: nonce)
             // Состояние обновится автоматически через authStateStream
         } catch let error as AuthError {
             errorMessage = error.localizedMessage
@@ -167,6 +168,26 @@ final class AuthViewModel: ObservableObject {
     /// Очистка сообщения об ошибке
     func clearError() {
         errorMessage = nil
+    }
+
+    /// Красиво отображает ошибку входа через Apple ID, без техничных кодов.
+    func setAppleSignInError(_ error: Error) {
+        if let appleError = error as? ASAuthorizationError {
+            switch appleError.code {
+            case .canceled:
+                errorMessage = "Вход через Apple был отменён."
+            case .failed, .unknown:
+                errorMessage = "Не удалось выполнить вход через Apple. Попробуйте ещё раз."
+            case .invalidResponse, .notHandled:
+                errorMessage = "Ответ Apple недействителен. Попробуйте позже."
+            case .notInteractive:
+                errorMessage = "Вход через Apple недоступен в текущем режиме. Попробуйте открыть приложение напрямую."
+            @unknown default:
+                errorMessage = "Ошибка входа через Apple ID. Попробуйте ещё раз."
+            }
+        } else {
+            errorMessage = "Ошибка входа через Apple ID: \(error.localizedDescription)"
+        }
     }
 
     /// Повторить последнюю неудачную попытку входа/регистрации

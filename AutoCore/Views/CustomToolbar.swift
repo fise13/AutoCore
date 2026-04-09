@@ -85,7 +85,7 @@ struct CustomToolbar: ToolbarContent {
                     Button(action: onSell) {
                         Label("Продать", systemImage: "checkmark.seal")
                     }
-                    .keyboardShortcut("s", modifiers: .command)
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
                 }
                 
                 Button(action: onSettings) {

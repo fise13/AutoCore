@@ -23,4 +23,13 @@ protocol FinancialSyncService: AnyObject {
     /// Подписка на изменения: сначала кэш (офлайн), затем обновления при изменении данных.
     /// Используется на iOS для real-time + offline.
     func observeOperations(companyId: String) -> AsyncStream<[FinancialOperationEntity]>
+    
+    /// Удаляет операцию по cloud document id.
+    func deleteOperation(documentId: String, companyId: String) async throws
+
+    /// Удаляет операцию по данным сущности (fallback для legacy-записей без cloudDocumentId).
+    func deleteOperation(_ entity: FinancialOperationEntity, companyId: String) async throws
+
+    /// Обновляет существующую операцию в Firestore.
+    func updateOperation(documentId: String, companyId: String, fields: [String: Any]) async throws
 }

@@ -16,6 +16,7 @@ struct OnboardingView: View {
     
     @State private var choice: OnboardingChoice = .choose
     @State private var companyName = ""
+    @State private var isShowingTutorial = false
     
     enum OnboardingChoice {
         case choose
@@ -30,7 +31,7 @@ struct OnboardingView: View {
             authViewModel: authViewModel
         ))
         _inviteViewModel = StateObject(wrappedValue: InviteViewModel(
-            membershipService: FirestoreCompanyMembershipService(inviteService: FirestoreInviteService()),
+            membershipService: FirestoreFunctionsCompanyMembershipService(),
             authViewModel: authViewModel
         ))
     }
@@ -66,6 +67,16 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: 260)
+
+                    Button {
+                        isShowingTutorial = true
+                    } label: {
+                        Label("Обучение", systemImage: "graduationcap")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: 260)
+                    .padding(.top, 4)
                 }
                 .padding(.top, 16)
                 
@@ -78,6 +89,11 @@ struct OnboardingView: View {
         }
         .padding(32)
         .frame(minWidth: 400, minHeight: 320)
+        .sheet(isPresented: $isShowingTutorial) {
+            MacTutorialView {
+                isShowingTutorial = false
+            }
+        }
     }
     
     private var createCompanyForm: some View {

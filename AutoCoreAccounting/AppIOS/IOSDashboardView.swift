@@ -3,8 +3,6 @@ import UIKit
 
 #if os(iOS)
 
-/// Главный экран бухгалтера: сводка по деньгам и быстрый доступ к операциям.
-/// Данные читаются напрямую из Firestore по companyId. Flowly-стиль.
 struct IOSDashboardView: View {
     let database: DatabaseService
     let companyId: String
@@ -34,7 +32,7 @@ struct IOSDashboardView: View {
         case .viewer: return false
         }
     }
-    
+
     private let currencyFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -43,7 +41,7 @@ struct IOSDashboardView: View {
         f.groupingSeparator = " "
         return f
     }()
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -57,6 +55,7 @@ struct IOSDashboardView: View {
                 }
             }
             .refreshable {
+                IOSHaptics.impact(.light)
                 await viewModel.refreshAll()
             }
             .task {
@@ -69,11 +68,13 @@ struct IOSDashboardView: View {
                 if canAddOperations {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
+                            IOSHaptics.impact(.light)
                             showAddIncome = true
                         } label: {
                             Label("Приход", systemImage: "plus.circle")
                         }
                         Button {
+                            IOSHaptics.impact(.light)
                             showAddExpense = true
                         } label: {
                             Label("Расход", systemImage: "minus.circle")
@@ -98,36 +99,45 @@ struct IOSDashboardView: View {
         }
     }
 
+    // MARK: - Header
+
     private var flowlyHeaderSection: some View {
         ZStack(alignment: .topLeading) {
-            IOSPalette.flowlyBlue
-                .frame(height: 200)
+            IOSPalette.headerGradient
+                .frame(height: 220)
                 .ignoresSafeArea(edges: .top)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Денежная позиция")
-                    .font(IOSDesign.Typography.subtitle)
-                    .foregroundStyle(.white.opacity(0.9))
-                    .iosAnimatedAppear(index: 0)
-                Text("\(currencyFormatter.string(from: viewModel.cashBalance as NSDecimalNumber) ?? "0") ₸")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                HStack {
+                    Text("Денежная позиция")
+                        .font(IOSDesign.Typography.subtitle)
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    syncStatusBadge
+                }
+                .iosAnimatedAppear(index: 0)
+
+                Text("\(currencyFormatter.string(from: viewModel.totalBalance as NSDecimalNumber) ?? "0") ₸")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .contentTransition(.numericText())
-                    .animation(IOSMotion.standard, value: viewModel.cashBalance)
+                    .animation(IOSMotion.standard, value: viewModel.totalBalance)
                     .iosAnimatedAppear(index: 1)
-                let total = viewModel.cashBalance + viewModel.kaspiBalance
+                    .accessibilityLabel("Общий баланс \(currencyFormatter.string(from: viewModel.totalBalance as NSDecimalNumber) ?? "0") тенге")
+
+                let total = viewModel.totalBalance
                 let progress = total > 0 ? NSDecimalNumber(decimal: viewModel.cashBalance / total).doubleValue : 0.5
                 VStack(alignment: .leading, spacing: 6) {
-                    IOSProgressBar(progress: progress, fillColor: IOSPalette.positive)
-                        .frame(height: 8)
+                    IOSProgressBar(progress: progress, trackColor: .white.opacity(0.2), fillColor: .white.opacity(0.9))
+                        .frame(height: 6)
                         .animation(IOSMotion.standard, value: progress)
                     HStack {
-                        Text("Kaspi: \(currencyFormatter.string(from: viewModel.kaspiBalance as NSDecimalNumber) ?? "0") ₸")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.9))
+                        balanceLabel("Касса", value: viewModel.cashBalance)
                         Spacer()
+                        balanceLabel("Kaspi", value: viewModel.kaspiBalance)
                     }
                 }
+                .iosAnimatedAppear(index: 2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Spacing.x3)
@@ -136,16 +146,103 @@ struct IOSDashboardView: View {
         }
     }
 
+    private func balanceLabel(_ title: String, value: Decimal) -> some View {
+        HStack(spacing: 4) {
+            Text("\(title):")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.7))
+            Text("\(currencyFormatter.string(from: value as NSDecimalNumber) ?? "0") ₸")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.95))
+        }
+    }
+
+    @ViewBuilder
+    private var syncStatusBadge: some View {
+        switch viewModel.syncState {
+        case .syncing:
+            HStack(spacing: 4) {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(0.6)
+                Text("Обновление")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.15)))
+        case .offline:
+            HStack(spacing: 4) {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 10, weight: .medium))
+                Text("Офлайн")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.15)))
+        case .error:
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.8))
+        default:
+            EmptyView()
+        }
+    }
+
+    // MARK: - Content
+
     private var flowlyContentSection: some View {
         VStack(alignment: .leading, spacing: Spacing.x3) {
-            HStack {
-                Text("Бюджеты категорий")
-                    .font(IOSDesign.Typography.title)
-                    .foregroundStyle(IOSPalette.textPrimary)
-                Spacer()
+            if let errorMsg = viewModel.errorMessage {
+                IOSStatusBanner(type: .error, message: errorMsg, onDismiss: { viewModel.dismissError() })
+                    .padding(.horizontal, Spacing.x3)
+                    .padding(.top, Spacing.x2)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            todayStatsSection
+            balanceCardsSection
+            chartSection
+            recentOperationsSection
+        }
+        .padding(.bottom, Spacing.x3)
+    }
+
+    // MARK: - Today Stats
+
+    private var todayStatsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.x2) {
+            IOSSectionHeader(title: "Сегодня", subtitle: todayDateString())
+                .iosAnimatedAppear(index: 3)
+
+            HStack(spacing: Spacing.unit) {
+                IOSStatCard(
+                    title: "Продажи",
+                    value: "\(currencyFormatter.string(from: viewModel.todaySales as NSDecimalNumber) ?? "0") ₸",
+                    subtitle: nil,
+                    accentColor: IOSPalette.positive
+                )
+                IOSStatCard(
+                    title: "Расходы",
+                    value: "\(currencyFormatter.string(from: viewModel.todayExpenses as NSDecimalNumber) ?? "0") ₸",
+                    subtitle: nil,
+                    accentColor: IOSPalette.negative
+                )
             }
             .padding(.horizontal, Spacing.x3)
-            .padding(.top, Spacing.x3)
+            .iosAnimatedAppear(index: 4)
+        }
+        .padding(.top, Spacing.x3)
+    }
+
+    // MARK: - Balance Cards
+
+    private var balanceCardsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.x2) {
+            IOSSectionHeader(title: "Счета")
 
             HStack(spacing: Spacing.unit) {
                 IOSCategoryCard(
@@ -155,7 +252,7 @@ struct IOSDashboardView: View {
                     icon: "banknote.fill",
                     pastelColor: IOSPalette.houseOrange
                 )
-                .iosAnimatedAppear(index: 2)
+                .iosAnimatedAppear(index: 5)
                 IOSCategoryCard(
                     title: "Kaspi",
                     value: "\(currencyFormatter.string(from: viewModel.kaspiBalance as NSDecimalNumber) ?? "0") ₸",
@@ -163,84 +260,87 @@ struct IOSDashboardView: View {
                     icon: "creditcard.fill",
                     pastelColor: IOSPalette.travelBlue
                 )
-                .iosAnimatedAppear(index: 3)
+                .iosAnimatedAppear(index: 6)
             }
             .padding(.horizontal, Spacing.x3)
+        }
+    }
 
-            IOSFlowlyCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Динамика операций")
-                        .font(IOSDesign.Typography.body.weight(.semibold))
-                        .foregroundStyle(IOSPalette.textPrimary)
-                    Text("Последние 7 дней")
-                        .font(.caption)
-                        .foregroundStyle(IOSPalette.textSecondary)
-                    IOSMiniBarChart(values: dailyTotalsForLastWeek(), accent: IOSPalette.flowlyBlue)
-                        .frame(height: 100)
-                }
-            }
-            .padding(.horizontal, Spacing.x3)
-            .iosAnimatedAppear(index: 4)
+    // MARK: - Chart
 
+    private var chartSection: some View {
+        IOSChartCard(
+            title: "Динамика операций",
+            subtitle: "Последние 7 дней",
+            values: dailyTotalsForLastWeek(),
+            accent: IOSPalette.chartBar
+        )
+        .padding(.horizontal, Spacing.x3)
+        .iosAnimatedAppear(index: 7)
+    }
+
+    // MARK: - Recent Operations
+
+    private var recentOperationsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.x2) {
             HStack {
                 Text("Последние операции")
-                    .font(IOSDesign.Typography.title)
+                    .font(IOSDesign.Typography.title2)
                     .foregroundStyle(IOSPalette.textPrimary)
                 Spacer()
                 if let onViewAll = onViewAllOperations {
-                    Button(action: onViewAll) {
-                        Text("View All")
+                    Button(action: {
+                        IOSHaptics.selection()
+                        onViewAll()
+                    }) {
+                        Text("Все")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(IOSPalette.flowlyBlue)
                     }
                 }
             }
             .padding(.horizontal, Spacing.x3)
-            .iosAnimatedAppear(index: 5)
+            .iosAnimatedAppear(index: 8)
 
             if viewModel.isLoading && viewModel.operations.isEmpty {
-                IOSFlowlyCard {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .tint(IOSPalette.flowlyBlue)
-                        Text("Загрузка…")
-                            .font(IOSDesign.Typography.subtitle)
-                            .foregroundStyle(IOSPalette.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Spacing.x2)
+                VStack(spacing: 12) {
+                    IOSSkeletonCard(lineCount: 2)
+                    IOSSkeletonCard(lineCount: 2)
+                    IOSSkeletonCard(lineCount: 2)
                 }
                 .padding(.horizontal, Spacing.x3)
             } else if viewModel.operations.isEmpty {
                 IOSFlowlyCard {
-                    Text("Пока нет операций")
-                        .font(IOSDesign.Typography.subtitle)
-                        .foregroundStyle(IOSPalette.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, Spacing.x2)
+                    IOSEmptyStateView(
+                        icon: "tray",
+                        title: "Пока нет операций",
+                        message: "Добавьте первый приход или расход",
+                        actionTitle: canAddOperations ? "Добавить приход" : nil,
+                        action: canAddOperations ? { showAddIncome = true } : nil
+                    )
                 }
                 .padding(.horizontal, Spacing.x3)
             } else {
                 let recentOps = Array(viewModel.operations.prefix(5))
                 IOSFlowlyCard {
                     VStack(spacing: 0) {
-                        ForEach(Array(recentOps.enumerated()), id: \.element.id) { index, op in
+                        ForEach(Array(recentOps.enumerated()), id: \.element.id) { _, op in
                             IOSOperationRow(operation: op)
                                 .padding(.vertical, 10)
-                                .iosAnimatedAppear(index: index, delayPerItem: 0.05)
                             if op.id != recentOps.last?.id {
                                 Divider()
-                                    .overlay(IOSPalette.border)
+                                    .overlay(IOSPalette.separator)
                             }
                         }
                     }
                 }
                 .padding(.horizontal, Spacing.x3)
-                .iosAnimatedAppear(index: 6)
+                .iosAnimatedAppear(index: 9)
             }
         }
-        .padding(.bottom, Spacing.x3)
     }
+
+    // MARK: - Helpers
 
     private func dailyTotalsForLastWeek() -> [Double] {
         let calendar = Calendar.current
@@ -257,7 +357,13 @@ struct IOSDashboardView: View {
     private func absDecimal(_ value: Decimal) -> Decimal {
         value < 0 ? -value : value
     }
+
+    private func todayDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.dateFormat = "d MMMM, EEEE"
+        return formatter.string(from: Date())
+    }
 }
 
 #endif
-

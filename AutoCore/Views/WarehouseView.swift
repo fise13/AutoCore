@@ -8,6 +8,7 @@ struct WarehouseView: View {
     @StateObject private var viewModel: WarehouseViewModel
     @State private var isShowingCreateItem = false
     @State private var movementAction: MovementAction?
+    @State private var itemPendingDelete: InventoryItemEntity?
 
     init(companyId: String) {
         _viewModel = StateObject(
@@ -120,6 +121,12 @@ struct WarehouseView: View {
                 } label: {
                     Label("Списание", systemImage: "minus.circle")
                 }
+
+                Button(role: .destructive) {
+                    itemPendingDelete = selectedItem
+                } label: {
+                    Label("Удалить", systemImage: "trash")
+                }
             }
         }
         .padding(12)
@@ -156,6 +163,34 @@ struct WarehouseView: View {
                 Text(formatCurrency(item.sellPrice))
             }
             .width(min: 100, ideal: 120)
+        }
+        .contextMenu(forSelectionType: String.self) { selectedIds in
+            if let id = selectedIds.first,
+               let item = viewModel.filteredItems.first(where: { $0.id == id }) {
+                Button(role: .destructive) {
+                    itemPendingDelete = item
+                } label: {
+                    Label("Удалить", systemImage: "trash")
+                }
+            }
+        }
+        .confirmationDialog(
+            "Удалить товар?",
+            isPresented: Binding(
+                get: { itemPendingDelete != nil },
+                set: { if !$0 { itemPendingDelete = nil } }
+            ),
+            presenting: itemPendingDelete
+        ) { item in
+            Button("Удалить", role: .destructive) {
+                viewModel.deleteItem(itemId: item.id)
+                itemPendingDelete = nil
+            }
+            Button("Отмена", role: .cancel) {
+                itemPendingDelete = nil
+            }
+        } message: { item in
+            Text("Товар \"\(item.name)\" будет удалён со склада.")
         }
     }
 

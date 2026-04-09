@@ -58,13 +58,12 @@ struct IOSAppRootView: View {
                     )
                 }
             }
-            .id(selectedTab)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.asymmetric(
                 insertion: .opacity.combined(with: .scale(scale: 0.98)),
                 removal: .opacity.combined(with: .scale(scale: 1.02))
             ))
-            .animation(IOSMotion.standard, value: selectedTab)
+            .animation(IOSMotion.adaptiveAnimation(IOSMotion.standard), value: selectedTab)
 
             IOSFlowlyTabBar(selectedIndex: selectedTab, onSelect: { selectedTab = $0 })
         }
@@ -83,7 +82,8 @@ struct IOSAppRootView: View {
                     featureFlagService: featureFlagService,
                     settingsService: settingsService,
                     recoveryState: appState.recoveryState,
-                    databaseService: appViewModel.database
+                    databaseService: appViewModel.database,
+                    companyId: companyId
                 )
             }
         }

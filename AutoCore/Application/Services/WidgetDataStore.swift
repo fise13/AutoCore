@@ -11,7 +11,7 @@ import Foundation
 #if os(iOS)
 
 enum WidgetDataStore {
-    static let appGroupId = "group.wise.AutoCoreAccounting"
+    static let appGroupId = "group.kz.autocore.accounting"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: appGroupId)
@@ -41,12 +41,12 @@ enum WidgetDataStore {
         return (formatter.string(from: value as NSDecimalNumber) ?? "0") + " ₸"
     }
 
-    /// Сброс при выходе из аккаунта, чтобы виджет не показывал данные другого пользователя.
     static func clear() {
         guard let d = defaults else { return }
         d.removeObject(forKey: "cashBalance")
         d.removeObject(forKey: "kaspiBalance")
         d.removeObject(forKey: "updatedAt")
+        d.removeObject(forKey: "widgetData")
     }
 }
 

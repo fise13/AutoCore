@@ -16,22 +16,17 @@ struct IOSInvoiceScanFlowView: View {
     var onDismiss: () -> Void
     
     @State private var selectedItem: PhotosPickerItem?
-    @State private var selectedImage: UIImage?
-    @State private var scannedInvoice: ScannedInvoice?
-    @State private var isScanning = false
-    @State private var errorMessage: String?
+    @StateObject private var viewModel = IOSInvoiceScanViewModel()
     @Environment(\.dismiss) private var dismiss
-    
-    private let scanner = InvoiceScannerService()
     
     var body: some View {
         NavigationStack {
             Group {
-                if let invoice = scannedInvoice {
+                if let invoice = viewModel.scannedInvoice {
                     IOSInvoiceEditView(
                         invoice: Binding(
                             get: { invoice },
-                            set: { scannedInvoice = $0 }
+                            set: { viewModel.scannedInvoice = $0 }
                         ),
                         companyId: companyId,
                         currentUserEmail: currentUserEmail,
@@ -65,10 +60,39 @@ struct IOSInvoiceScanFlowView: View {
         ZStack {
             IOSScreenBackground()
             VStack(spacing: Spacing.x3) {
-                if isScanning {
-                    ProgressView("Распознавание текста…")
-                        .tint(IOSPalette.flowlyBlue)
-                    Spacer()
+                if viewModel.isLoading {
+                    VStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .stroke(IOSPalette.progressTrack, lineWidth: 10)
+                                .frame(width: 110, height: 110)
+                            Circle()
+                                .trim(from: 0, to: max(0.02, min(1, viewModel.scanProgress)))
+                                .stroke(
+                                    IOSPalette.accentGradient,
+                                    style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                                )
+                                .rotationEffect(.degrees(-90))
+                                .frame(width: 110, height: 110)
+                                .animation(IOSMotion.standard, value: viewModel.scanProgress)
+                            Text("\(Int(max(0, min(1, viewModel.scanProgress)) * 100))%")
+                                .font(.system(size: 24, weight: .bold, design: .rounded))
+                                .foregroundStyle(IOSPalette.textPrimary)
+                        }
+                        Text(viewModel.scanStatus)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(IOSPalette.textPrimary)
+                        Text("Можно свернуть экран и вернуться позже: результат сохранится в этой сессии.")
+                            .font(.caption)
+                            .foregroundStyle(IOSPalette.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .padding(Spacing.x3)
+                    .frame(maxWidth: .infinity)
+                    .background(IOSPalette.backgroundLayer)
+                    .cornerRadius(20)
+                    Spacer(minLength: 0)
                 } else {
                     PhotosPicker(
                         selection: $selectedItem,
@@ -91,7 +115,7 @@ struct IOSInvoiceScanFlowView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                     
-                    if let err = errorMessage {
+                    if let err = viewModel.errorMessage {
                         Text(err)
                             .font(.caption)
                             .foregroundStyle(IOSPalette.negative)
@@ -105,26 +129,15 @@ struct IOSInvoiceScanFlowView: View {
     
     private func loadAndScan(from item: PhotosPickerItem?) async {
         guard let item else { return }
-        isScanning = true
-        errorMessage = nil
-        defer { isScanning = false }
-        
         do {
             if let data = try await item.loadTransferable(type: Data.self),
                let image = UIImage(data: data) {
-                let invoice = await scanner.scanImage(image: image)
-                await MainActor.run {
-                    scannedInvoice = invoice
-                }
+                await viewModel.processImage(image)
             } else {
-                await MainActor.run {
-                    errorMessage = "Не удалось загрузить изображение"
-                }
+                await MainActor.run { viewModel.errorMessage = "Не удалось загрузить изображение" }
             }
         } catch {
-            await MainActor.run {
-                errorMessage = error.localizedDescription
-            }
+            await MainActor.run { viewModel.errorMessage = error.localizedDescription }
         }
     }
 }

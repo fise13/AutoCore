@@ -20,6 +20,7 @@ struct IOSAccountingTabView: View {
     @State private var showAddIncome = false
     @State private var showAddExpense = false
     @State private var showInvoiceScanner = false
+    @State private var operationToEdit: FinancialOperation?
     
     init(database: DatabaseService, companyId: String, currentUser: UserEntity? = nil) {
         self.database = database
@@ -92,21 +93,68 @@ struct IOSAccountingTabView: View {
                 if canAddOperations {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
+                            IOSHaptics.impact(.light)
                             showAddIncome = true
                         } label: {
-                            Label("Приход", systemImage: "plus.circle")
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(IOSPalette.positive)
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    Circle()
+                                        .fill(IOSPalette.positive.opacity(0.16))
+                                        .overlay(
+                                            Circle().stroke(IOSPalette.positive.opacity(0.35), lineWidth: 1)
+                                        )
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Добавить приход")
+
                         Button {
+                            IOSHaptics.impact(.light)
                             showAddExpense = true
                         } label: {
-                            Label("Расход", systemImage: "minus.circle")
+                            Image(systemName: "minus")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(IOSPalette.negative)
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    Circle()
+                                        .fill(IOSPalette.negative.opacity(0.14))
+                                        .overlay(
+                                            Circle().stroke(IOSPalette.negative.opacity(0.30), lineWidth: 1)
+                                        )
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Добавить расход")
+
                         if canUseInvoiceScanner {
                             Button {
+                                IOSHaptics.impact(.light)
                                 showInvoiceScanner = true
                             } label: {
-                                Label("Накладная", systemImage: "doc.viewfinder")
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.viewfinder")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("Скан")
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 7)
+                                .background(
+                                    Capsule(style: .continuous)
+                                        .fill(IOSPalette.accentGradient)
+                                        .overlay(
+                                            Capsule(style: .continuous)
+                                                .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
+                                        )
+                                )
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Сканировать накладную")
                         }
                     }
                 }
@@ -132,13 +180,20 @@ struct IOSAccountingTabView: View {
                     onDismiss: { showInvoiceScanner = false }
                 )
             }
+            .sheet(item: $operationToEdit) { op in
+                IOSEditOperationSheet(
+                    operation: op,
+                    viewModel: viewModel,
+                    onDismiss: { operationToEdit = nil }
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var flowlyHeaderSection: some View {
         ZStack(alignment: .topLeading) {
-            IOSPalette.flowlyBlue
+            IOSPalette.headerGradient
                 .frame(height: 220)
                 .ignoresSafeArea(edges: .top)
 
@@ -232,12 +287,28 @@ struct IOSAccountingTabView: View {
                     } else {
                         let ops = Array(filteredOperations.prefix(60))
                         VStack(spacing: 0) {
-                            ForEach(Array(ops.enumerated()), id: \.element.id) { index, op in
+                            ForEach(Array(ops.enumerated()), id: \.element.id) { _, op in
                                 IOSOperationRow(operation: op)
                                     .padding(.vertical, 10)
-                                    .iosAnimatedAppear(index: index, delayPerItem: 0.03)
+                                    .contextMenu {
+                                        if canAddOperations, op.cloudDocumentId != nil {
+                                            Button {
+                                                operationToEdit = op
+                                            } label: {
+                                                Label("Редактировать", systemImage: "pencil")
+                                            }
+                                            Button(role: .destructive) {
+                                                Task {
+                                                    IOSHaptics.notification(.warning)
+                                                    try? await viewModel.deleteOperation(op)
+                                                }
+                                            } label: {
+                                                Label("Удалить", systemImage: "trash")
+                                            }
+                                        }
+                                    }
                                 if op.id != ops.last?.id {
-                                    Divider().overlay(IOSPalette.border)
+                                    Divider().overlay(IOSPalette.separator)
                                 }
                             }
                         }

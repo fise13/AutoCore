@@ -17,6 +17,13 @@ struct SoldMotorsView: View {
         formatter.dateStyle = .short
         return formatter
     }()
+    private static let currencyFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "KZT"
+        formatter.currencySymbol = "₸"
+        return formatter
+    }()
     
     var body: some View {
         VStack(spacing: 0) {
@@ -132,11 +139,7 @@ struct SoldMotorsView: View {
     }
     
     private func formatCurrency(_ amount: Decimal) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "KZT"
-        formatter.currencySymbol = "₸"
-        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
+        Self.currencyFormatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
     }
 }
 

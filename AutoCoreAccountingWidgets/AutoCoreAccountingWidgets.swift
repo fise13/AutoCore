@@ -10,38 +10,51 @@ import SwiftUI
 
 // MARK: - Widget Data (читаем из App Group)
 
-private enum WidgetData {
-    static let appGroupId = "group.wise.AutoCoreAccounting"
+private enum WidgetSharedData {
+    static let appGroupId = "group.kz.autocore.accounting"
 
     static var defaults: UserDefaults? {
         UserDefaults(suiteName: appGroupId)
     }
 
-    static func load() -> (cashBalance: Decimal, kaspiBalance: Decimal)? {
-        guard let d = defaults,
-              let cash = d.object(forKey: "cashBalance") as? NSDecimalNumber,
-              let kaspi = d.object(forKey: "kaspiBalance") as? NSDecimalNumber else {
+    static func load() -> (cashBalance: Double, kaspiBalance: Double)? {
+        guard let d = defaults else {
             return nil
         }
-        return (cash as Decimal, kaspi as Decimal)
+        if let data = d.data(forKey: "widgetData"),
+           let decoded = try? JSONDecoder().decode(WidgetPayload.self, from: data) {
+            return (decoded.cashBalance, decoded.kaspiBalance)
+        }
+        if let cash = d.object(forKey: "cashBalance") as? NSNumber,
+           let kaspi = d.object(forKey: "kaspiBalance") as? NSNumber {
+            return (cash.doubleValue, kaspi.doubleValue)
+        }
+        return nil
     }
 
-    static func format(_ value: Decimal) -> String {
+    static func format(_ value: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.minimumFractionDigits = 0
         formatter.maximumFractionDigits = 0
         formatter.groupingSeparator = " "
-        return (formatter.string(from: value as NSDecimalNumber) ?? "0") + " ₸"
+        return (formatter.string(from: NSNumber(value: value)) ?? "0") + " ₸"
     }
+}
+
+private struct WidgetPayload: Codable {
+    let cashBalance: Double
+    let kaspiBalance: Double
 }
 
 // MARK: - Entry
 
 struct BalanceEntry: TimelineEntry {
     let date: Date
-    let cashBalance: Decimal
-    let kaspiBalance: Decimal
+    let cashBalance: Double
+    let kaspiBalance: Double
+
+    var totalBalance: Double { cashBalance + kaspiBalance }
 }
 
 // MARK: - Provider
@@ -52,7 +65,7 @@ struct BalanceProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (BalanceEntry) -> Void) {
-        if let data = WidgetData.load() {
+        if let data = WidgetSharedData.load() {
             completion(BalanceEntry(date: Date(), cashBalance: data.cashBalance, kaspiBalance: data.kaspiBalance))
         } else {
             completion(BalanceEntry(date: Date(), cashBalance: 0, kaspiBalance: 0))
@@ -60,7 +73,7 @@ struct BalanceProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<BalanceEntry>) -> Void) {
-        if let data = WidgetData.load() {
+        if let data = WidgetSharedData.load() {
             let entry = BalanceEntry(date: Date(), cashBalance: data.cashBalance, kaspiBalance: data.kaspiBalance)
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date()
             completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
@@ -81,18 +94,12 @@ struct SmallBalanceView: View {
             HStack(spacing: 4) {
                 Image(systemName: "building.columns.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color(red: 0.04, green: 0.52, blue: 1), Color(red: 0.08, green: 0.45, blue: 0.95)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .foregroundStyle(Color(red: 0.04, green: 0.45, blue: 0.95))
                 Text("AutoCore")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(.primary)
             }
-            Text(WidgetData.format(entry.cashBalance + entry.kaspiBalance))
+            Text(WidgetSharedData.format(entry.totalBalance))
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -115,18 +122,12 @@ struct MediumBalanceView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "building.columns.circle.fill")
                         .font(.system(size: 20))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color(red: 0.04, green: 0.52, blue: 1), Color(red: 0.08, green: 0.45, blue: 0.95)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .foregroundStyle(Color(red: 0.04, green: 0.45, blue: 0.95))
                     Text("AutoCore Accounting")
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(.primary)
                 }
-                Text(WidgetData.format(entry.cashBalance + entry.kaspiBalance))
+                Text(WidgetSharedData.format(entry.totalBalance))
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                     .foregroundStyle(.primary)
                 Text("Денежная позиция")
@@ -140,7 +141,7 @@ struct MediumBalanceView: View {
                     Text("Касса")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                    Text(WidgetData.format(entry.cashBalance))
+                    Text(WidgetSharedData.format(entry.cashBalance))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(.primary)
                 }
@@ -148,7 +149,7 @@ struct MediumBalanceView: View {
                     Text("Kaspi")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                    Text(WidgetData.format(entry.kaspiBalance))
+                    Text(WidgetSharedData.format(entry.kaspiBalance))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(.primary)
                 }
@@ -162,7 +163,7 @@ struct MediumBalanceView: View {
 
 @main
 struct AutoCoreAccountingWidgets: Widget {
-    let kind: String = "AutoCoreAccountingWidget"
+    let kind: String = "AutoCoreBalanceWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: BalanceProvider()) { entry in

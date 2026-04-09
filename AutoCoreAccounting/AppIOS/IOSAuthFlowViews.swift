@@ -1,5 +1,7 @@
 import SwiftUI
 import AuthenticationServices
+import CryptoKit
+import Security
 
 #if os(iOS)
 
@@ -294,227 +296,494 @@ struct IOSWelcomeView: View {
     let onRegister: () -> Void
 
     var body: some View {
-        WelcomeScreen(
-            onLogin: onLogin,
-            onRegister: onRegister
-        )
-        .navigationBarHidden(true)
+        WelcomeScreen(onLogin: onLogin, onRegister: onRegister)
+            .navigationBarHidden(true)
     }
 }
 
-// MARK: - Welcome Screen (Main Container)
+// MARK: - Welcome Theme Helpers
+
+private enum WelcomeTheme {
+    static func fg(_ cs: ColorScheme) -> Color {
+        cs == .dark ? .white : IOSPalette.textPrimary
+    }
+    static func fgSecondary(_ cs: ColorScheme) -> Color {
+        cs == .dark ? .white.opacity(0.65) : IOSPalette.textSecondary
+    }
+    static func fgTertiary(_ cs: ColorScheme) -> Color {
+        cs == .dark ? .white.opacity(0.4) : IOSPalette.textTertiary
+    }
+    static func cardFill(_ cs: ColorScheme) -> Color {
+        cs == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+    }
+    static func cardBorder(_ cs: ColorScheme) -> Color {
+        cs == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+    static func ringStroke(_ cs: ColorScheme) -> Color {
+        cs == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.04)
+    }
+    static func pillFill(_ cs: ColorScheme) -> Color {
+        cs == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+    }
+    static func indicatorActive(_ cs: ColorScheme) -> Color {
+        cs == .dark ? .white : IOSPalette.flowlyBlue
+    }
+    static func indicatorInactive(_ cs: ColorScheme) -> Color {
+        cs == .dark ? Color.white.opacity(0.25) : Color.black.opacity(0.15)
+    }
+}
+
+// MARK: - Welcome Screen (Full Showcase)
 
 struct WelcomeScreen: View {
     let onLogin: () -> Void
     let onRegister: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var currentPage = 0
+    @State private var appeared = false
+
+    private let pageCount = 4
+
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             welcomeBackground
+                .ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 24) {
-                    TopCardsView()
-                    TransactionPreviewCard()
-                    CategoryIconsRow()
-                    WelcomeTextSection()
-                    Spacer(minLength: 120)
+            VStack(spacing: 0) {
+                TabView(selection: $currentPage) {
+                    WelcomeHeroPage().tag(0)
+                    WelcomeDashboardPage().tag(1)
+                    WelcomeTeamPage().tag(2)
+                    WelcomeSmartToolsPage().tag(3)
                 }
-                .padding(.horizontal, Spacing.x3)
-                .padding(.top, 56)
-                .padding(.bottom, 24)
-            }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .animation(.spring(response: 0.5, dampingFraction: 0.85), value: currentPage)
 
-            AuthButtonsView(onLogin: onLogin, onRegister: onRegister)
-                .padding(.horizontal, Spacing.x3)
-                .padding(.bottom, 36)
+                bottomSection
+            }
         }
         .ignoresSafeArea()
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.6)) { appeared = true }
+        }
     }
+
+    // MARK: Background
 
     private var welcomeBackground: some View {
-        LinearGradient(
-            colors: [
-                Color(red: 0.55, green: 0.78, blue: 1),
-                Color(red: 0.25, green: 0.55, blue: 0.95),
-                IOSPalette.flowlyBlue
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-}
-
-// MARK: - Top Cards (Savings + Goal)
-
-struct TopCardsView: View {
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            SavingsCard()
-            GoalCard()
-        }
-    }
-}
-
-private struct SavingsCard: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Вы сэкономили")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Color.white.opacity(0.85))
-            Text("350 ₸")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-            miniGraphLine
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.2))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+        ZStack {
+            if colorScheme == .dark {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.04, green: 0.08, blue: 0.16),
+                        Color(red: 0.06, green: 0.12, blue: 0.24),
+                        Color(red: 0.03, green: 0.06, blue: 0.14)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
                 )
-                .shadow(color: .black.opacity(0.12), radius: 16, x: 0, y: 8)
-        )
-        .rotation3DEffect(.degrees(-4), axis: (x: 0, y: 1, z: 0))
-    }
-
-    private var miniGraphLine: some View {
-        ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.white.opacity(0.15))
-                .frame(height: 4)
-            Canvas { context, size in
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: size.height - 2))
-                path.addLine(to: CGPoint(x: 10, y: size.height - 6))
-                path.addLine(to: CGPoint(x: 22, y: size.height - 4))
-                path.addLine(to: CGPoint(x: 34, y: size.height - 8))
-                path.addLine(to: CGPoint(x: size.width, y: 2))
-                context.stroke(path, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.96, green: 0.97, blue: 1.0),
+                        Color(red: 0.93, green: 0.95, blue: 0.99),
+                        Color(red: 0.95, green: 0.96, blue: 1.0)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             }
-            .frame(width: 48, height: 14)
+
+            Circle()
+                .fill(IOSPalette.flowlyBlue.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                .frame(width: 400, height: 400)
+                .blur(radius: 120)
+                .offset(x: -100, y: -200)
+
+            Circle()
+                .fill(Color(red: 0.4, green: 0.2, blue: 0.8).opacity(colorScheme == .dark ? 0.06 : 0.04))
+                .frame(width: 300, height: 300)
+                .blur(radius: 100)
+                .offset(x: 150, y: 300)
         }
+    }
+
+    // MARK: Bottom Section
+
+    private var bottomSection: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 8) {
+                ForEach(0..<pageCount, id: \.self) { i in
+                    Capsule()
+                        .fill(currentPage == i
+                              ? WelcomeTheme.indicatorActive(colorScheme)
+                              : WelcomeTheme.indicatorInactive(colorScheme))
+                        .frame(width: currentPage == i ? 24 : 8, height: 8)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: currentPage)
+                }
+            }
+
+            VStack(spacing: 12) {
+                Button {
+                    IOSHaptics.impact(.medium)
+                    onRegister()
+                } label: {
+                    Text("Начать бесплатно")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(IOSWelcomeAnimatedPrimaryStyle())
+
+                Button {
+                    IOSHaptics.impact(.light)
+                    onLogin()
+                } label: {
+                    Text("У меня есть аккаунт")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(IOSWelcomeAnimatedSecondaryStyle())
+            }
+            .padding(.horizontal, 20)
+        }
+        .padding(.bottom, 36)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 30)
     }
 }
 
-private struct GoalCard: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Дом")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-            Text("420 ₸ / 500 ₸")
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.9))
-            ProgressView(value: 0.84)
-                .tint(.white)
-                .scaleEffect(x: 1, y: 1.5, anchor: .center)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.2))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.12), radius: 16, x: 0, y: 8)
-        )
-        .rotation3DEffect(.degrees(4), axis: (x: 0, y: 1, z: 0))
-    }
-}
+// MARK: - Page 1: Hero
 
-// MARK: - Transaction Preview Card
+private struct WelcomeHeroPage: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var appeared = false
+    @State private var pulseScale: CGFloat = 1
 
-struct TransactionPreviewCard: View {
     var body: some View {
-        HStack(spacing: 14) {
+        VStack(spacing: 16) {
+            Spacer()
+
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.25))
-                    .frame(width: 44, height: 44)
-                Image(systemName: "engine.combustion.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.white)
-            }
+                    .stroke(WelcomeTheme.ringStroke(colorScheme), lineWidth: 1)
+                    .frame(width: 140, height: 140)
+                    .scaleEffect(pulseScale)
+                Circle()
+                    .stroke(WelcomeTheme.ringStroke(colorScheme).opacity(0.6), lineWidth: 1)
+                    .frame(width: 190, height: 190)
+                    .scaleEffect(pulseScale + 0.02)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Мотор EJ253")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text("200 000 тенге")
-                    .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.8))
+                Circle()
+                    .fill(IOSPalette.flowlyBlue.opacity(0.15))
+                    .frame(width: 80, height: 80)
+                    .blur(radius: 16)
+
+                Image(systemName: "building.columns.circle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(colorScheme == .dark ? .white : IOSPalette.flowlyBlue)
+                    .shadow(color: IOSPalette.flowlyBlue.opacity(0.3), radius: 16, x: 0, y: 6)
             }
+            .scaleEffect(appeared ? 1 : 0.7)
+            .opacity(appeared ? 1 : 0)
+
+            VStack(spacing: 6) {
+                Text("AutoCore")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(WelcomeTheme.fg(colorScheme))
+                Text("ACCOUNTING")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(IOSPalette.flowlyBlue)
+                    .tracking(5)
+            }
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 10)
+
+            Text("Полный контроль финансов\nвашего бизнеса")
+                .font(.system(size: 14))
+                .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+                .multilineTextAlignment(.center)
+                .opacity(appeared ? 1 : 0)
+
             Spacer()
-            Text("200 000 ₸")
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.2))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.1), radius: 12, x: 0, y: 6)
-        )
+        .padding(.horizontal, 20)
+        .onAppear {
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.75).delay(0.1)) { appeared = true }
+            withAnimation(.easeInOut(duration: 2.5).repeatForever(autoreverses: true)) { pulseScale = 1.06 }
+        }
     }
 }
 
-// MARK: - Category Icons Row
+// MARK: - Page 2: Dashboard Preview
 
-struct CategoryIconsRow: View {
-    private let categories: [(icon: String, color: Color)] = [
-        ("airplane", IOSPalette.travelBlue),
-        ("house.fill", IOSPalette.houseOrange),
-        ("bag.fill", IOSPalette.shoppingPink),
-        ("fork.knife", IOSPalette.healthGreen),
-        ("film.fill", Color(red: 0.95, green: 0.9, blue: 1))
+private struct WelcomeDashboardPage: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var appeared = false
+    @State private var chartAnimated = false
+
+    private let bars: [CGFloat] = [0.4, 0.65, 0.5, 0.85, 0.6, 0.75, 0.9]
+    private let days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Дашборд")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(IOSPalette.flowlyBlue)
+                Text("1 830 000 ₸")
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundStyle(WelcomeTheme.fg(colorScheme))
+                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
+                HStack(spacing: 10) {
+                    pill("Касса 1.2M", IOSPalette.positive)
+                    pill("Kaspi 630K", IOSPalette.flowlyBlue)
+                }
+                .padding(.top, 2)
+            }
+            .opacity(appeared ? 1 : 0)
+
+            chartCard
+                .opacity(appeared ? 1 : 0)
+
+            txList
+                .opacity(appeared ? 1 : 0)
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.1)) { appeared = true }
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.7).delay(0.4)) { chartAnimated = true }
+        }
+    }
+
+    private func pill(_ text: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 5, height: 5)
+            Text(text)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(WelcomeTheme.pillFill(colorScheme)))
+    }
+
+    private var chartCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Неделя")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(WelcomeTheme.fgTertiary(colorScheme))
+                Spacer()
+                Text("+23%")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(IOSPalette.positive)
+            }
+            GeometryReader { geo in
+                let sp: CGFloat = 4
+                let bw = (geo.size.width - sp * 6) / 7
+                HStack(alignment: .bottom, spacing: sp) {
+                    ForEach(Array(bars.enumerated()), id: \.offset) { i, v in
+                        VStack(spacing: 2) {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(IOSPalette.flowlyBlue.opacity(0.85))
+                                .frame(width: bw, height: chartAnimated ? geo.size.height * 0.7 * v : 2)
+                            Text(days[i])
+                                .font(.system(size: 7, weight: .medium))
+                                .foregroundStyle(WelcomeTheme.fgTertiary(colorScheme))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            }
+            .frame(height: 60)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(WelcomeTheme.cardFill(colorScheme))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(WelcomeTheme.cardBorder(colorScheme), lineWidth: 1))
+        )
+    }
+
+    private var txList: some View {
+        VStack(spacing: 0) {
+            txRow("arrow.up.right", "Продажа мотора", "+200 000", IOSPalette.positive)
+            Divider().overlay(WelcomeTheme.cardBorder(colorScheme))
+            txRow("minus", "Закупка запчастей", "-45 000", IOSPalette.negative)
+            Divider().overlay(WelcomeTheme.cardBorder(colorScheme))
+            txRow("plus", "Внесение средств", "+80 000", IOSPalette.positive)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(WelcomeTheme.cardFill(colorScheme))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(WelcomeTheme.cardBorder(colorScheme), lineWidth: 1))
+        )
+    }
+
+    private func txRow(_ icon: String, _ title: String, _ amount: String, _ color: Color) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle().fill(color.opacity(0.12)).frame(width: 24, height: 24)
+                Image(systemName: icon).font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
+            }
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(amount)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+// MARK: - Page 3: Team & Roles
+
+private struct WelcomeTeamPage: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var appeared = false
+    private let icons = ["person.fill", "chart.pie.fill", "doc.text.fill", "gearshape.fill"]
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer()
+
+            ZStack {
+                ForEach(0..<4, id: \.self) { i in
+                    let angle = Double(i) * 90
+                    let r: CGFloat = 50
+                    Circle()
+                        .fill(WelcomeTheme.cardFill(colorScheme))
+                        .frame(width: 36, height: 36)
+                        .overlay(Image(systemName: icons[i]).font(.system(size: 14)).foregroundStyle(WelcomeTheme.fgSecondary(colorScheme)))
+                        .offset(
+                            x: appeared ? cos(angle * .pi / 180) * Double(r) : 0,
+                            y: appeared ? sin(angle * .pi / 180) * Double(r) : 0
+                        )
+                        .opacity(appeared ? 1 : 0)
+                }
+                ZStack {
+                    Circle().fill(IOSPalette.flowlyBlue.opacity(0.18)).frame(width: 46, height: 46)
+                    Image(systemName: "person.3.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(colorScheme == .dark ? .white : IOSPalette.flowlyBlue)
+                }
+            }
+            .frame(height: 130)
+
+            VStack(spacing: 6) {
+                Text("Команда и роли")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(WelcomeTheme.fg(colorScheme))
+                Text("Каждая роль — свои права доступа")
+                    .font(.system(size: 13))
+                    .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+            }
+            .opacity(appeared ? 1 : 0)
+
+            VStack(spacing: 4) {
+                featureRow("person.badge.key.fill", "Invite-коды для сотрудников")
+                featureRow("lock.shield.fill", "Разграничение прав доступа")
+                featureRow("eye.fill", "Аудит: кто что изменил")
+                featureRow("icloud.and.arrow.up.fill", "Синхронизация в реальном времени")
+            }
+            .padding(.top, 4)
+            .opacity(appeared ? 1 : 0)
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .onAppear {
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.75).delay(0.1)) { appeared = true }
+        }
+    }
+
+    private func featureRow(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(IOSPalette.flowlyBlue)
+                .frame(width: 20)
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+            Spacer()
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+// MARK: - Page 4: Smart Tools
+
+private struct WelcomeSmartToolsPage: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var appeared = false
+
+    private let tools: [(icon: String, title: String, sub: String, color: Color)] = [
+        ("doc.viewfinder", "Скан", "Камера → черновик", Color(red: 0.4, green: 0.7, blue: 1)),
+        ("chart.bar.xaxis", "Аналитика", "Расходы и доходы", Color(red: 0.3, green: 0.85, blue: 0.5)),
+        ("square.grid.2x2.fill", "Виджеты", "Баланс на экране", Color(red: 1, green: 0.65, blue: 0.3)),
+        ("bell.badge.fill", "Пуши", "Ничего не пропустите", Color(red: 0.9, green: 0.4, blue: 0.5)),
+        ("iphone.gen3", "Офлайн", "Работает без сети", Color(red: 0.6, green: 0.5, blue: 0.9)),
+        ("shield.checkered", "Защита", "Данные зашифрованы", Color(red: 0.4, green: 0.8, blue: 0.8))
     ]
 
     var body: some View {
-        HStack(spacing: 16) {
-            ForEach(Array(categories.enumerated()), id: \.offset) { _, item in
-                ZStack {
-                    Circle()
-                        .fill(item.color)
-                        .frame(width: 52, height: 52)
-                        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
-                    Image(systemName: item.icon)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(IOSPalette.flowlyBlue)
+        VStack(spacing: 14) {
+            Spacer()
+
+            VStack(spacing: 5) {
+                Text("Инструменты")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(WelcomeTheme.fg(colorScheme))
+                Text("Всё для бизнеса в одном приложении")
+                    .font(.system(size: 13))
+                    .foregroundStyle(WelcomeTheme.fgSecondary(colorScheme))
+            }
+            .opacity(appeared ? 1 : 0)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(Array(tools.enumerated()), id: \.offset) { i, t in
+                    VStack(alignment: .leading, spacing: 4) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous).fill(t.color.opacity(0.12))
+                                .frame(width: 28, height: 28)
+                            Image(systemName: t.icon).font(.system(size: 13, weight: .medium)).foregroundStyle(t.color)
+                        }
+                        Text(t.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(WelcomeTheme.fg(colorScheme).opacity(0.85))
+                        Text(t.sub)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(WelcomeTheme.fgTertiary(colorScheme))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(WelcomeTheme.cardFill(colorScheme))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(WelcomeTheme.cardBorder(colorScheme), lineWidth: 1))
+                    )
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : CGFloat(10 + i * 2))
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(i) * 0.06), value: appeared)
                 }
             }
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
 
-// MARK: - Welcome Text Section
-
-struct WelcomeTextSection: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 0) {
-                Text("Добро пожаловать в ")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("AutoCore")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color(red: 0.95, green: 0.97, blue: 1))
-            }
-            Text("Контролируйте финансы компании в реальном времени.")
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(Color.white.opacity(0.9))
+            Spacer()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) { appeared = true }
+        }
     }
 }
 
@@ -527,13 +796,13 @@ struct AuthButtonsView: View {
     var body: some View {
         VStack(spacing: 12) {
             Button(action: onRegister) {
-                Text("Регистрация")
+                Text("Начать бесплатно")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(IOSWelcomeAnimatedPrimaryStyle())
 
             Button(action: onLogin) {
-                Text("Войти")
+                Text("У меня есть аккаунт")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(IOSWelcomeAnimatedSecondaryStyle())
@@ -541,42 +810,49 @@ struct AuthButtonsView: View {
     }
 }
 
-/// Primary button with press animation for welcome screen
 struct IOSWelcomeAnimatedPrimaryStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .semibold, design: .rounded))
+            .font(.system(size: 17, weight: .semibold, design: .rounded))
             .foregroundStyle(.white)
-            .padding(.vertical, 13)
+            .padding(.vertical, 15)
             .frame(maxWidth: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
-                    .fill(IOSPalette.accentGradient)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [IOSPalette.flowlyBlue, IOSPalette.flowlyBlueDark],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .shadow(color: IOSPalette.flowlyBlue.opacity(0.35), radius: 16, x: 0, y: 8)
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.9 : 1)
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
 
-/// Secondary button with press animation for welcome screen
 struct IOSWelcomeAnimatedSecondaryStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.vertical, 13)
+            .foregroundStyle(colorScheme == .dark ? .white.opacity(0.85) : IOSPalette.flowlyBlue)
+            .padding(.vertical, 14)
             .frame(maxWidth: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
-                    .fill(Color.white.opacity(0.2))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.08) : IOSPalette.flowlyBlue.opacity(0.08))
                     .overlay(
-                        RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
-                            .stroke(Color.white.opacity(0.4), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(colorScheme == .dark ? Color.white.opacity(0.15) : IOSPalette.flowlyBlue.opacity(0.25), lineWidth: 1)
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.8 : 1)
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
@@ -780,6 +1056,7 @@ struct LoginFormCard<Content: View>: View {
 
 struct AuthButtons: View {
     @ObservedObject var authViewModel: AuthViewModel
+    @State private var currentNonce = ""
 
     var body: some View {
         VStack(spacing: 16) {
@@ -787,15 +1064,19 @@ struct AuthButtons: View {
                 .signIn,
                 onRequest: { request in
                     request.requestedScopes = [.fullName, .email]
+                    let nonce = randomNonceString()
+                    currentNonce = nonce
+                    request.nonce = sha256(nonce)
                 },
                 onCompletion: { result in
                     switch result {
                     case .success(let authResult):
                         if let credential = authResult.credential as? ASAuthorizationAppleIDCredential {
-                            Task { await authViewModel.handleAppleSignIn(credential: credential) }
+                            let nonce = currentNonce
+                            Task { await authViewModel.handleAppleSignIn(credential: credential, rawNonce: nonce) }
                         }
                     case .failure(let error):
-                        authViewModel.setError("Ошибка входа через Apple ID: \(error.localizedDescription)")
+                        authViewModel.setAppleSignInError(error)
                     }
                 }
             )
@@ -808,24 +1089,90 @@ struct AuthButtons: View {
                 Task { await authViewModel.signInWithGoogle() }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "g.circle.fill")
-                        .font(.system(size: 20))
+                    GoogleLogoView(size: 20)
                     Text("Войти через Google")
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.white.opacity(0.15))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                        )
+                        .fill(Color(.systemBackground))
+                        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
                 )
             }
             .buttonStyle(IOSLoginCardButtonStyle())
+        }
+    }
+}
+
+private func randomNonceString(length: Int = 32) -> String {
+    precondition(length > 0)
+    let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+    var result = ""
+    var remainingLength = length
+
+    while remainingLength > 0 {
+        var randoms: [UInt8] = (0..<16).map { _ in 0 }
+        let errorCode = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+        if errorCode != errSecSuccess {
+            return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+
+        randoms.forEach { random in
+            if remainingLength == 0 {
+                return
+            }
+            if random < charset.count {
+                result.append(charset[Int(random)])
+                remainingLength -= 1
+            }
+        }
+    }
+    return result
+}
+
+private func sha256(_ input: String) -> String {
+    let hashed = SHA256.hash(data: Data(input.utf8))
+    return hashed.map { String(format: "%02x", $0) }.joined()
+}
+
+// MARK: - LoginDivider
+
+// MARK: - Google Logo
+
+struct GoogleLogoView: View {
+    var size: CGFloat = 20
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.white).frame(width: size, height: size)
+            Canvas { ctx, canvasSize in
+                let r = min(canvasSize.width, canvasSize.height) / 2
+                let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+                let lineW = r * 0.38
+
+                let blue = Color(red: 66/255, green: 133/255, blue: 244/255)
+                let red = Color(red: 234/255, green: 67/255, blue: 53/255)
+                let yellow = Color(red: 251/255, green: 188/255, blue: 5/255)
+                let green = Color(red: 52/255, green: 168/255, blue: 83/255)
+
+                func arc(_ start: Angle, _ end: Angle, _ color: Color) {
+                    var path = Path()
+                    path.addArc(center: center, radius: r * 0.65, startAngle: start, endAngle: end, clockwise: false)
+                    ctx.stroke(path, with: .color(color), lineWidth: lineW)
+                }
+
+                arc(.degrees(-45), .degrees(45), red)
+                arc(.degrees(45), .degrees(135), yellow)
+                arc(.degrees(135), .degrees(225), green)
+                arc(.degrees(225), .degrees(315), blue)
+
+                let bar = Path(CGRect(x: center.x - r * 0.05, y: center.y - lineW / 2, width: r * 0.55, height: lineW))
+                ctx.fill(bar, with: .color(blue))
+            }
+            .frame(width: size, height: size)
         }
     }
 }
@@ -1095,7 +1442,7 @@ struct IOSOnboardingView: View {
             authViewModel: authViewModel
         ))
         _inviteViewModel = StateObject(wrappedValue: InviteViewModel(
-            membershipService: FirestoreCompanyMembershipService(inviteService: FirestoreInviteService()),
+            membershipService: FirestoreFunctionsCompanyMembershipService(),
             authViewModel: authViewModel
         ))
     }

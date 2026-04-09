@@ -8,40 +8,67 @@
 
 import Foundation
 import FirebaseFirestore
+import Network
 
 final class FirestoreFinancialSyncService: FinancialSyncService {
     private let db = Firestore.firestore()
     private let logger = LoggingService.shared
+    private let networkMonitor = NWPathMonitor()
+    private var isConnected = true
     
     static let collectionName = "financialOperations"
+    
+    private func scopedLocalDocumentId(companyId: String, localID: Int64) -> String {
+        // Избегаем коллизий docId между компаниями для локальных операций.
+        "company_\(companyId)_local_\(localID)"
+    }
+    
+    init() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            self?.isConnected = path.status == .satisfied
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "NetworkMonitor"))
+    }
+    
+    deinit {
+        networkMonitor.cancel()
+    }
     
     func pushOperation(_ entity: FinancialOperationEntity, companyId: String) async throws -> String {
         try await pushOperation(entity, companyId: companyId, documentId: nil)
     }
     
-    /// Пуш с опциональным documentId (для выгрузки локальных операций без дубликатов).
     func pushOperation(_ entity: FinancialOperationEntity, companyId: String, documentId: String?) async throws -> String {
         guard !companyId.isEmpty else {
             throw NSError(domain: "FinancialSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "companyId is required for push"])
         }
         let docId = documentId ?? UUID().uuidString
-        let data: [String: Any] = [
+        var data: [String: Any] = [
             "companyId": companyId,
             "type": entity.type.rawValue,
             "amount": NSDecimalNumber(decimal: entity.amount).doubleValue,
             "paymentMethod": entity.paymentMethod.rawValue,
-            "cashReceived": entity.cashReceived.map { NSDecimalNumber(decimal: $0).doubleValue } as Any,
-            "changeGiven": entity.changeGiven.map { NSDecimalNumber(decimal: $0).doubleValue } as Any,
             "account": entity.account.rawValue,
-            "relatedMotorID": entity.relatedMotorID as Any,
             "createdAt": Timestamp(date: entity.createdAt),
             "createdByUserId": entity.createdByUser,
             "comment": entity.comment,
             "source": entity.source,
             "details": entity.details,
-            "category": entity.category as Any,
-            "description": entity.description
+            "description": entity.description,
+            "updatedAt": FieldValue.serverTimestamp()
         ]
+        if let cashReceived = entity.cashReceived {
+            data["cashReceived"] = NSDecimalNumber(decimal: cashReceived).doubleValue
+        }
+        if let changeGiven = entity.changeGiven {
+            data["changeGiven"] = NSDecimalNumber(decimal: changeGiven).doubleValue
+        }
+        if let relatedMotorID = entity.relatedMotorID {
+            data["relatedMotorID"] = relatedMotorID
+        }
+        if let category = entity.category {
+            data["category"] = category
+        }
         
         logger.info("Firestore PUSH start: docId=\(docId), companyId=\(companyId)")
         do {
@@ -108,6 +135,45 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
         }
     }
     
+    func deleteOperation(documentId: String, companyId: String) async throws {
+        guard !companyId.isEmpty else {
+            throw NSError(domain: "FinancialSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "companyId is required for delete"])
+        }
+        guard !documentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "FinancialSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "documentId is required for delete"])
+        }
+        try await db.collection(Self.collectionName).document(documentId).delete()
+        logger.info("Firestore DELETE success: docId=\(documentId)")
+    }
+
+    func deleteOperation(_ entity: FinancialOperationEntity, companyId: String) async throws {
+        if let cloudId = entity.cloudDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines), !cloudId.isEmpty {
+            try await deleteOperation(documentId: cloudId, companyId: companyId)
+            return
+        }
+
+        // Legacy fallback: операция без cloudDocumentId (создана до внедрения cloud id в локальной БД).
+        // Ищем максимально похожий документ в облаке и удаляем его.
+        let remote = try await pullOperations(companyId: companyId, since: nil)
+        guard let matched = remote.first(where: { candidate in
+            candidate.type == entity.type &&
+            candidate.account == entity.account &&
+            candidate.amount == entity.amount &&
+            candidate.relatedMotorID == entity.relatedMotorID &&
+            candidate.createdByUser == entity.createdByUser &&
+            candidate.comment == entity.comment &&
+            candidate.details == entity.details &&
+            abs(candidate.createdAt.timeIntervalSince(entity.createdAt)) < 10
+        }), let matchedDocId = matched.cloudDocumentId else {
+            throw NSError(
+                domain: "FinancialSync",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "Cloud operation not found for legacy local delete"]
+            )
+        }
+        try await deleteOperation(documentId: matchedDocId, companyId: companyId)
+    }
+    
     /// Сливает список операций из Firestore в локальную БД (без дубликатов). Используется при pull и при observe.
     func mergeEntitiesIntoDatabase(_ entities: [FinancialOperationEntity], companyId: String, database: DatabaseService) async throws {
         var insertedCount = 0
@@ -129,7 +195,12 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                     $0.details == entity.details
                 })
                 
-                if existing != nil { continue }
+                if let existing {
+                    if existing.cloudDocumentId == nil, let cloudId = entity.cloudDocumentId {
+                        try database.setFinancialOperationCloudDocumentId(id: existing.id, cloudDocumentId: cloudId)
+                    }
+                    continue
+                }
                 
                 _ = try database.insertFinancialOperation(
                     type: entity.type.rawValue,
@@ -146,7 +217,7 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                     details: entity.details,
                     category: entity.category,
                     description: entity.description,
-                    cloudRecordId: nil,
+                    cloudRecordId: entity.cloudDocumentId,
                     companyId: companyId
                 )
                 insertedCount += 1
@@ -193,7 +264,11 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                 description: op.description
             )
             do {
-                _ = try await pushOperation(entity, companyId: companyId, documentId: "local-\(op.id)")
+                let targetDocId = op.cloudDocumentId ?? scopedLocalDocumentId(companyId: companyId, localID: op.id)
+                let pushedDocId = try await pushOperation(entity, companyId: companyId, documentId: targetDocId)
+                if op.cloudDocumentId == nil {
+                    try database.setFinancialOperationCloudDocumentId(id: op.id, cloudDocumentId: pushedDocId)
+                }
             } catch {
                 logger.error("Firestore PUSH local op id=\(op.id) failed", error: error)
             }
@@ -203,6 +278,19 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
         }
     }
     
+    func updateOperation(documentId: String, companyId: String, fields: [String: Any]) async throws {
+        guard !companyId.isEmpty else {
+            throw NSError(domain: "FinancialSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "companyId is required"])
+        }
+        guard !documentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "FinancialSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "documentId is required"])
+        }
+        var updateData = fields
+        updateData["updatedAt"] = FieldValue.serverTimestamp()
+        try await db.collection(Self.collectionName).document(documentId).updateData(updateData)
+        logger.info("Firestore UPDATE success: docId=\(documentId)")
+    }
+
     private func mapDocumentToEntity(_ doc: DocumentSnapshot) -> FinancialOperationEntity? {
         guard let data = doc.data(),
               let typeRaw = data["type"] as? String,
@@ -259,6 +347,7 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
         
         return FinancialOperationEntity(
             id: 0,
+            cloudDocumentId: doc.documentID,
             type: type,
             amount: amount,
             paymentMethod: paymentMethod,

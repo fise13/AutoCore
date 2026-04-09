@@ -58,6 +58,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var engines: [Engine] = []
     // Единый источник истины - все моторы без фильтрации
     @Published private(set) var allMotors: [Motor] = []
+    @Published private(set) var cachedFilteredMotors: [Motor] = []
+    @Published private(set) var cachedFilteredMotorDTOs: [MotorRowDTO] = []
     // Отдельный массив для экрана "Проданные" (с отдельным поиском)
     @Published private(set) var soldMotors: [Motor] = []
     @Published private(set) var soldMotorPrices: [Int64: Decimal] = [:]  // Цены продажи по ID мотора
@@ -87,111 +89,7 @@ final class AppViewModel: ObservableObject {
     @Published var isShowingRefundMotorSheet = false
     @Published var motorToRefund: Motor?
     
-    // Вычисляемое свойство для фильтрации моторов
-    // Фильтрация по availability применяется ПЕРВОЙ, затем поиск
-    // ВАЖНО: специфичные листы НЕ создают моторы, они хранятся отдельно
-    // Но при поиске показываем результаты из specific_records
-    var filteredMotors: [Motor] {
-        var result = allMotors
-        
-        // 1. Фильтр по availability (soldDate)
-        switch availabilityFilter {
-        case .all:
-            break // Показываем все
-        case .available:
-            result = result.filter { $0.soldDate == nil }
-        case .sold:
-            result = result.filter { $0.soldDate != nil }
-        }
-        
-        // 2. Фильтр по brandID
-        if let brandID = selectedBrandID {
-            result = result.filter { motor in
-                // Находим engine по motor.engineID, затем проверяем его brandID
-                if let engine = engines.first(where: { $0.id == motor.engineID }) {
-                    return engine.brandID == brandID
-                }
-                return false
-            }
-        }
-        
-        // 3. Фильтр по engineID
-        if let engineID = selectedEngineID {
-            result = result.filter { $0.engineID == engineID }
-        }
-        
-        // 4. Улучшенный поиск применяется ПОСЛЕ всех фильтров
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedSearch.isEmpty {
-            let lowerSearch = trimmedSearch.lowercased()
-            // Разбиваем поисковый запрос на слова для поиска по нескольким полям
-            let searchTerms = lowerSearch.split(separator: " ").map { String($0) }
-            
-            result = result.filter { motor in
-                // Поиск по всем полям одновременно
-                let searchableText = [
-                    motor.serialCode,
-                    motor.engineCode,
-                    motor.brandName,
-                    motor.configuration,
-                    motor.notes,
-                    motor.transmission,
-                    formatDate(motor.arrivalDate),
-                    formatDate(motor.soldDate)
-                ].joined(separator: " ").lowercased()
-                
-                // Все слова должны быть найдены (AND логика)
-                return searchTerms.allSatisfy { term in
-                    searchableText.contains(term)
-                }
-            }
-            
-            // 5. Добавляем специфичные записи ТОЛЬКО при поиске (если нет фильтров по бренду/двигателю)
-            // НЕ добавляем их при фильтре "Проданные", так как у них нет soldDate
-            if selectedBrandID == nil && selectedEngineID == nil && availabilityFilter != .sold {
-                let recordsToShow = allSpecificRecords
-                
-                // Конвертируем в виртуальные моторы и фильтруем по поиску
-                let virtualMotors = recordsToShow.compactMap { record -> Motor? in
-                    // Ищем номер двигателя в данных
-                    let serialCode = record.data["НОМЕР ДВИГАТЕЛЯ"] ?? 
-                                   record.data["НОМЕР"] ?? 
-                                   record.data["SERIAL"] ?? 
-                                   record.data["SERIAL_CODE"] ??
-                                   record.data.values.first ?? ""
-                    
-                    if serialCode.isEmpty { return nil }
-                    
-                    // Применяем поиск - проверяем, что запись соответствует поисковому запросу
-                    let lowerSearch = trimmedSearch.lowercased()
-                    let matchesSearch = serialCode.lowercased().contains(lowerSearch) ||
-                                       record.data.values.contains { $0.lowercased().contains(lowerSearch) }
-                    if !matchesSearch { return nil }
-                    
-                    // Создаем виртуальный мотор
-                    return Motor(
-                        id: -record.id, // Отрицательный ID для виртуальных моторов
-                        engineID: -1,
-                        serialCode: serialCode,
-                        configuration: record.data["КОМПЛЕКТАЦИЯ"] ?? record.data["КОНФИГУРАЦИЯ"] ?? "",
-                        notes: record.data.map { "\($0.key): \($0.value)" }.joined(separator: ", "),
-                        quantity: Int(record.data["КОЛИЧЕСТВО"] ?? record.data["QUANTITY"] ?? "1") ?? 1,
-                        transmission: record.data["КОРОБКА"] ?? record.data["TRANSMISSION"] ?? "",
-                        arrivalDate: record.createdAt,
-                        soldDate: nil, // Специфичные записи не имеют soldDate
-                        deletedAt: nil,
-                        createdAt: record.createdAt,
-                        updatedAt: record.createdAt,
-                        brandName: "Специфичный",
-                        engineCode: "—"
-                    )
-                }
-                result.append(contentsOf: virtualMotors)
-            }
-        }
-        
-        return result
-    }
+    var filteredMotors: [Motor] { cachedFilteredMotors }
 
     @Published var errorMessage: String?
     @Published var isLoading = false
@@ -228,6 +126,11 @@ final class AppViewModel: ObservableObject {
         formatter.dateStyle = .short
         return formatter
     }()
+    private static let cellEditDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
     
     private func formatDate(_ date: Date?) -> String {
         guard let date else { return "" }
@@ -238,6 +141,8 @@ final class AppViewModel: ObservableObject {
     @Published var companyId: String = "default"
     private let motorRepository: MotorRepository
     private let firestoreCatalogSync = FirestoreCatalogSyncService()
+    private let firestoreFinancialSync = FirestoreFinancialSyncService()
+    private var engineToBrandID: [Int64: Int64] = [:]
     
     init(database: DatabaseService, recoveryState: RecoveryState? = nil) {
         self.database = database
@@ -248,11 +153,126 @@ final class AppViewModel: ObservableObject {
         refreshAll()
     }
 
+    private func rebuildEngineBrandIndex() {
+        engineToBrandID = Dictionary(uniqueKeysWithValues: engines.map { ($0.id, $0.brandID) })
+    }
+
+    private func recomputeFilteredCaches() {
+        var result = allMotors
+
+        switch availabilityFilter {
+        case .all:
+            break
+        case .available:
+            result = result.filter { $0.soldDate == nil }
+        case .sold:
+            result = result.filter { $0.soldDate != nil }
+        }
+
+        if let brandID = selectedBrandID {
+            result = result.filter { motor in
+                engineToBrandID[motor.engineID] == brandID
+            }
+        }
+
+        if let engineID = selectedEngineID {
+            result = result.filter { $0.engineID == engineID }
+        }
+
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSearch.isEmpty {
+            let lowerSearch = trimmedSearch.lowercased()
+            let searchTerms = lowerSearch.split(separator: " ").map(String.init)
+
+            result = result.filter { motor in
+                let searchableText = [
+                    motor.serialCode,
+                    motor.engineCode,
+                    motor.brandName,
+                    motor.configuration,
+                    motor.notes,
+                    motor.transmission,
+                    formatDate(motor.arrivalDate),
+                    formatDate(motor.soldDate)
+                ].joined(separator: " ").lowercased()
+                return searchTerms.allSatisfy(searchableText.contains)
+            }
+
+            if selectedBrandID == nil && selectedEngineID == nil && availabilityFilter != .sold {
+                let virtualMotors = allSpecificRecords.compactMap { record -> Motor? in
+                    let serialCode = record.data["НОМЕР ДВИГАТЕЛЯ"] ??
+                        record.data["НОМЕР"] ??
+                        record.data["SERIAL"] ??
+                        record.data["SERIAL_CODE"] ??
+                        record.data.values.first ?? ""
+                    guard !serialCode.isEmpty else { return nil }
+
+                    let matchesSearch = serialCode.lowercased().contains(lowerSearch) ||
+                        record.data.values.contains { $0.lowercased().contains(lowerSearch) }
+                    guard matchesSearch else { return nil }
+
+                    return Motor(
+                        id: -record.id,
+                        engineID: -1,
+                        serialCode: serialCode,
+                        configuration: record.data["КОМПЛЕКТАЦИЯ"] ?? record.data["КОНФИГУРАЦИЯ"] ?? "",
+                        notes: record.data.map { "\($0.key): \($0.value)" }.joined(separator: ", "),
+                        quantity: Int(record.data["КОЛИЧЕСТВО"] ?? record.data["QUANTITY"] ?? "1") ?? 1,
+                        transmission: record.data["КОРОБКА"] ?? record.data["TRANSMISSION"] ?? "",
+                        arrivalDate: record.createdAt,
+                        soldDate: nil,
+                        deletedAt: nil,
+                        createdAt: record.createdAt,
+                        updatedAt: record.createdAt,
+                        brandName: "Специфичный",
+                        engineCode: "—"
+                    )
+                }
+                result.append(contentsOf: virtualMotors)
+            }
+        }
+
+        cachedFilteredMotors = result
+        cachedFilteredMotorDTOs = convertToDTOs(motors: result)
+    }
+
+    private nonisolated static func buildLatestSalePriceMap(_ operations: [DatabaseService.FinancialOperation], motorIDs: Set<Int64>) -> [Int64: Decimal] {
+        var latestByMotor: [Int64: (date: Date, amount: Decimal)] = [:]
+        for op in operations {
+            guard let motorID = op.relatedMotorID, motorIDs.contains(motorID) else { continue }
+            if let current = latestByMotor[motorID] {
+                if op.createdAt > current.date {
+                    latestByMotor[motorID] = (op.createdAt, op.amount)
+                }
+            } else {
+                latestByMotor[motorID] = (op.createdAt, op.amount)
+            }
+        }
+        return latestByMotor.mapValues(\.amount)
+    }
+
     func setCompanyId(_ value: String) {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
         companyId = normalized
         motorRepository.setCompanyId(normalized)
+        syncFinancialData()
+    }
+
+    /// Синхронизирует финансовые операции: push local → Firestore, pull Firestore → local.
+    func syncFinancialData() {
+        let cid = companyId
+        guard cid != "default" && !cid.isEmpty else { return }
+        Task.detached { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.firestoreFinancialSync.pushLocalOperationsToFirestore(companyId: cid, database: self.database)
+                try await self.firestoreFinancialSync.pullAndMergeFinancialOperations(companyId: cid, database: self.database)
+                LoggingService.shared.info("macOS financial sync completed for companyId=\(cid)")
+            } catch {
+                LoggingService.shared.error("macOS financial sync failed", error: error)
+            }
+        }
     }
 
     func refreshAll() {
@@ -277,6 +297,11 @@ final class AppViewModel: ObservableObject {
         
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
+
+            if companyId != "default" && !companyId.isEmpty {
+                try? await self.firestoreFinancialSync.pullAndMergeFinancialOperations(companyId: companyId, database: database)
+            }
+
             do {
                 let brands = try database.fetchBrands()
                 let engines = try database.fetchEngines(brandID: nil)
@@ -285,33 +310,20 @@ final class AppViewModel: ObservableObject {
                 let totalSoldCount = try database.countMotors(filter: soldFilter)
                 let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 
-                // Загружаем цены продажи из финансовых операций
-                let motorIDs = soldMotors.map { $0.id }
-                var prices: [Int64: Decimal] = [:]
-                
-                if !motorIDs.isEmpty {
-                    let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
-                    let financialFilter = DatabaseService.FinancialOperationFilter(
-                        type: .sale,
-                        account: nil,
-                        relatedMotorID: nil,
-                        fromDate: nil,
-                        toDate: nil,
-                        limit: nil,
-                        offset: nil,
-                        companyId: effectiveCompanyId
-                    )
-                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
-                    
-                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
-                    for motorID in motorIDs {
-                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
-                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
-                        if let saleOperation = sortedOperations.first {
-                            prices[motorID] = saleOperation.amount
-                        }
-                    }
-                }
+                let motorIDs = Set(soldMotors.map(\.id))
+                let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
+                let financialFilter = DatabaseService.FinancialOperationFilter(
+                    type: .sale,
+                    account: nil,
+                    relatedMotorID: nil,
+                    fromDate: nil,
+                    toDate: nil,
+                    limit: nil,
+                    offset: nil,
+                    companyId: effectiveCompanyId
+                )
+                let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                let prices = Self.buildLatestSalePriceMap(operations, motorIDs: motorIDs)
                 
                 // Загружаем категории для получения имён
                 let categories = try database.fetchAllSpecificCategories()
@@ -370,33 +382,19 @@ final class AppViewModel: ObservableObject {
                 let soldMotors = try database.fetchMotors(filter: soldFilter, limit: pageSize, offset: 0)
                 let totalCount = try database.countMotors(filter: soldFilter)
                 
-                // Загружаем цены продажи из финансовых операций
-                let motorIDs = soldMotors.map { $0.id }
-                var prices: [Int64: Decimal] = [:]
-                
-                if !motorIDs.isEmpty {
-                    let effectiveCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
-                    let financialFilter = DatabaseService.FinancialOperationFilter(
-                        type: .sale,
-                        account: nil,
-                        relatedMotorID: nil,
-                        fromDate: nil,
-                        toDate: nil,
-                        limit: nil,
-                        offset: nil,
-                        companyId: effectiveCompanyId
-                    )
-                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
-                    
-                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
-                    for motorID in motorIDs {
-                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
-                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
-                        if let saleOperation = sortedOperations.first {
-                            prices[motorID] = saleOperation.amount
-                        }
-                    }
-                }
+                let motorIDs = Set(soldMotors.map(\.id))
+                let financialFilter = DatabaseService.FinancialOperationFilter(
+                    type: .sale,
+                    account: nil,
+                    relatedMotorID: nil,
+                    fromDate: nil,
+                    toDate: nil,
+                    limit: nil,
+                    offset: nil,
+                    companyId: effectiveCompanyId
+                )
+                let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                let prices = Self.buildLatestSalePriceMap(operations, motorIDs: motorIDs)
                 
                 // Специфичные записи НЕ добавляются в "Проданные" - только в поиск
                 await MainActor.run { [weak self] in
@@ -430,32 +428,19 @@ final class AppViewModel: ObservableObject {
                 let offset = page * pageSize
                 let newMotors = try database.fetchMotors(filter: filter, limit: pageSize, offset: offset)
                 
-                // Загружаем цены продажи для новых моторов
-                let motorIDs = newMotors.map { $0.id }
-                var prices: [Int64: Decimal] = [:]
-                
-                if !motorIDs.isEmpty {
-                    let financialFilter = DatabaseService.FinancialOperationFilter(
-                        type: .sale,
-                        account: nil,
-                        relatedMotorID: nil,
-                        fromDate: nil,
-                        toDate: nil,
-                        limit: nil,
-                        offset: nil,
-                        companyId: effectiveCompanyId
-                    )
-                    let operations = try database.fetchFinancialOperations(filter: financialFilter)
-                    
-                    // Группируем по relatedMotorID и берём последнюю операцию продажи для каждого мотора
-                    for motorID in motorIDs {
-                        let motorOperations = operations.filter { (op: DatabaseService.FinancialOperation) in op.relatedMotorID == motorID }
-                        let sortedOperations = motorOperations.sorted(by: { (op1: DatabaseService.FinancialOperation, op2: DatabaseService.FinancialOperation) in op1.createdAt > op2.createdAt })
-                        if let saleOperation = sortedOperations.first {
-                            prices[motorID] = saleOperation.amount
-                        }
-                    }
-                }
+                let motorIDs = Set(newMotors.map(\.id))
+                let financialFilter = DatabaseService.FinancialOperationFilter(
+                    type: .sale,
+                    account: nil,
+                    relatedMotorID: nil,
+                    fromDate: nil,
+                    toDate: nil,
+                    limit: nil,
+                    offset: nil,
+                    companyId: effectiveCompanyId
+                )
+                let operations = try database.fetchFinancialOperations(filter: financialFilter)
+                let prices = Self.buildLatestSalePriceMap(operations, motorIDs: motorIDs)
                 
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -702,7 +687,14 @@ final class AppViewModel: ObservableObject {
                     if self.selectedEngineID != nil {
                         self.selectedEngineID = nil
                     }
+                    self.recomputeFilteredCaches()
                 }
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest3($searchText.removeDuplicates(), $availabilityFilter.removeDuplicates(), $selectedEngineID.removeDuplicates())
+            .sink { [weak self] _, _, _ in
+                self?.recomputeFilteredCaches()
             }
             .store(in: &cancellables)
         
@@ -789,6 +781,26 @@ final class AppViewModel: ObservableObject {
     func clearAllFilters() {
         selectedBrandID = nil
         selectedEngineID = nil
+    }
+
+    func renameBrand(brandID: Int64, newName: String) {
+        let database = self.database
+        let normalized = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try database.updateBrandName(brandID: brandID, name: normalized)
+                await MainActor.run {
+                    self.refreshAll()
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка переименования бренда: \(error.localizedDescription)")
+                }
+            }
+        }
     }
     
     func toggleSold(for motor: Motor) {
@@ -964,6 +976,8 @@ final class AppViewModel: ObservableObject {
         self.totalSoldCount = totalSoldCount
         self.allSpecificRecords = allSpecificRecords
         self.specificCategories = categories
+        rebuildEngineBrandIndex()
+        recomputeFilteredCaches()
         self.isLoading = false
     }
     
@@ -1227,7 +1241,19 @@ final class AppViewModel: ObservableObject {
     private func updateAllMotors(_ motors: [Motor]) {
         self.allMotors = motors
         self.totalMotorCount = motors.count
+        recomputeFilteredCaches()
         self.isLoading = false
+    }
+
+    @MainActor
+    private func applyLocalMotorUpdate(_ updatedMotor: Motor) {
+        if let idx = allMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
+            allMotors[idx] = updatedMotor
+        }
+        if let soldIdx = soldMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
+            soldMotors[soldIdx] = updatedMotor
+        }
+        recomputeFilteredCaches()
     }
     
     @MainActor
@@ -1253,6 +1279,9 @@ final class AppViewModel: ObservableObject {
     func refreshServiceRecords(categoryID: Int64) {
         let searchText = serviceRecordsSearchText
         let database = self.database
+        Task { @MainActor in
+            self.isLoading = true
+        }
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -1301,6 +1330,8 @@ final class AppViewModel: ObservableObject {
     @MainActor
     private func updateEngines(_ engines: [Engine]) {
         self.engines = engines
+        rebuildEngineBrandIndex()
+        recomputeFilteredCaches()
     }
     
     @MainActor
@@ -1326,11 +1357,34 @@ final class AppViewModel: ObservableObject {
     func updateSpecificRecordCell(recordID: Int64, fieldKey: String, value: String) {
         let database = self.database
         let specificRecords = self.specificRecords
+        let selectedSection = self.selectedSection
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 // Находим запись (получаем из захваченного массива)
                 guard let record = specificRecords.first(where: { $0.id == recordID }) else { return }
+
+                // "Лист" = реальный перенос записи между специфичными категориями.
+                if fieldKey == "_CATEGORY_NAME" {
+                    guard !normalizedValue.isEmpty else { return }
+                    let categories = try database.fetchAllSpecificCategories()
+                    let targetCategoryID: Int64
+                    if let existing = categories.first(where: { $0.name.caseInsensitiveCompare(normalizedValue) == .orderedSame }) {
+                        targetCategoryID = existing.id
+                    } else {
+                        targetCategoryID = try database.createSpecificCategoryUnlocked(name: normalizedValue)
+                    }
+                    try database.updateSpecificRecordCategory(id: recordID, categoryID: targetCategoryID)
+
+                    await MainActor.run {
+                        self.refreshAll()
+                        if case .specificCategory(let currentCategoryID) = selectedSection {
+                            self.refreshServiceRecords(categoryID: currentCategoryID)
+                        }
+                    }
+                    return
+                }
                 
                 // Обновляем данные
                 var updatedData = record.data
@@ -1374,6 +1428,43 @@ final class AppViewModel: ObservableObject {
                 // Получаем текущий мотор для сохранения старого значения
                 let oldMotor = try await self.getMotor(id: motorID)
                 guard let oldMotor else { return }
+                let trimmedInput = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // Текущее состояние как строки — нужно для проверки "вся строка очищена"
+                var serialText = oldMotor.serialCode
+                var configurationText = oldMotor.configuration
+                var notesText = oldMotor.notes
+                var quantityText = "\(oldMotor.quantity)"
+                var transmissionText = oldMotor.transmission
+                var arrivalDateText = Self.cellEditDateFormatter.string(from: oldMotor.arrivalDate)
+                var soldDateText = oldMotor.soldDate.map { Self.cellEditDateFormatter.string(from: $0) } ?? ""
+
+                switch field {
+                case .serialCode: serialText = value
+                case .configuration: configurationText = value
+                case .notes: notesText = value
+                case .quantity: quantityText = value
+                case .transmission: transmissionText = value
+                case .arrivalDate: arrivalDateText = value
+                case .soldDate: soldDateText = value
+                }
+
+                let shouldDeleteMotor =
+                    serialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    configurationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    notesText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    quantityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    transmissionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    arrivalDateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    soldDateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+                if shouldDeleteMotor {
+                    try database.deleteMotor(id: motorID)
+                    await MainActor.run {
+                        self.removeMotorFromLocalCaches(motorID: motorID)
+                    }
+                    return
+                }
                 
                 // Подготавливаем новые значения
                 var newConfiguration = oldMotor.configuration
@@ -1386,13 +1477,34 @@ final class AppViewModel: ObservableObject {
                 // Обновляем соответствующее поле
                 switch field {
                 case .serialCode:
-                    // Серийный номер обычно не редактируется, но если нужно - можно добавить
+                    guard !trimmedInput.isEmpty else { return }
+                    try database.updateMotorSerialCode(id: motorID, serialCode: trimmedInput)
+                    await MainActor.run {
+                        let updatedMotor = Motor(
+                            id: oldMotor.id,
+                            engineID: oldMotor.engineID,
+                            serialCode: trimmedInput,
+                            configuration: oldMotor.configuration,
+                            notes: oldMotor.notes,
+                            quantity: oldMotor.quantity,
+                            transmission: oldMotor.transmission,
+                            arrivalDate: oldMotor.arrivalDate,
+                            soldDate: oldMotor.soldDate,
+                            deletedAt: oldMotor.deletedAt,
+                            createdAt: oldMotor.createdAt,
+                            updatedAt: Date(),
+                            brandName: oldMotor.brandName,
+                            engineCode: oldMotor.engineCode
+                        )
+                        self.applyLocalMotorUpdate(updatedMotor)
+                    }
                     return
                 case .configuration:
                     newConfiguration = value
                 case .notes:
                     newNotes = value
                 case .quantity:
+                    if trimmedInput.isEmpty { return }
                     if let qty = Int(value), qty > 0 {
                         newQuantity = qty
                     } else {
@@ -1401,19 +1513,16 @@ final class AppViewModel: ObservableObject {
                 case .transmission:
                     newTransmission = value
                 case .arrivalDate:
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyy-MM-dd"
-                    if let date = formatter.date(from: value) {
+                    if trimmedInput.isEmpty { return }
+                    if let date = Self.cellEditDateFormatter.date(from: value) {
                         newArrivalDate = date
                     } else {
                         return // Невалидная дата
                     }
                 case .soldDate:
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyy-MM-dd"
-                    if value.isEmpty {
+                    if trimmedInput.isEmpty {
                         newSoldDate = nil
-                    } else if let date = formatter.date(from: value) {
+                    } else if let date = Self.cellEditDateFormatter.date(from: value) {
                         newSoldDate = date
                     } else {
                         return // Невалидная дата
@@ -1434,21 +1543,182 @@ final class AppViewModel: ObservableObject {
                 // Регистрируем Undo
                 await MainActor.run { [weak self] in
                     guard let self else { return }
+                    let updatedMotor = Motor(
+                        id: oldMotor.id,
+                        engineID: oldMotor.engineID,
+                        serialCode: oldMotor.serialCode,
+                        configuration: newConfiguration,
+                        notes: newNotes,
+                        quantity: newQuantity,
+                        transmission: newTransmission,
+                        arrivalDate: newArrivalDate,
+                        soldDate: newSoldDate,
+                        deletedAt: oldMotor.deletedAt,
+                        createdAt: oldMotor.createdAt,
+                        updatedAt: Date(),
+                        brandName: oldMotor.brandName,
+                        engineCode: oldMotor.engineCode
+                    )
                     self.registerCellEditUndo(
                         motorID: motorID,
                         oldMotor: oldMotor,
-                        newConfiguration: newConfiguration,
-                        newNotes: newNotes,
-                        newQuantity: newQuantity,
-                        newTransmission: newTransmission,
-                        newArrivalDate: newArrivalDate,
-                        newSoldDate: newSoldDate
+                        newMotor: updatedMotor
                     )
-                    self.refreshAll()
+                    self.applyLocalMotorUpdate(updatedMotor)
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     self?.setError("Ошибка обновления: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func removeMotorFromLocalCaches(motorID: Int64) {
+        allMotors.removeAll { $0.id == motorID }
+        soldMotors.removeAll { $0.id == motorID }
+        soldMotorPrices.removeValue(forKey: motorID)
+        if selectedMotorID == motorID { selectedMotorID = nil }
+        selectedMotorIDs.remove(motorID)
+        recomputeFilteredCaches()
+    }
+
+    func createMotorInline(draft: MotorInlineDraft) {
+        let trimmedSerial = draft.serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let serial = trimmedSerial.isEmpty ? "NEW-\(Int(Date().timeIntervalSince1970))" : trimmedSerial
+
+        let brandName: String = {
+            if let selectedBrandID,
+               let brand = brands.first(where: { $0.id == selectedBrandID }) {
+                return brand.name
+            }
+            return brands.first?.name ?? "INLINE"
+        }()
+
+        let engineCode: String = {
+            if let selectedEngineID,
+               let engine = engines.first(where: { $0.id == selectedEngineID }) {
+                return engine.code
+            }
+            return "INLINE"
+        }()
+
+        let qty = max(1, Int(draft.quantity.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1)
+        let arrival = Self.cellEditDateFormatter.date(from: draft.arrivalDate.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Date()
+        let sold = Self.cellEditDateFormatter.date(from: draft.soldDate.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        addManualMotor(
+            brandName: brandName,
+            engineCode: engineCode,
+            serialCode: serial,
+            configuration: draft.configuration,
+            notes: draft.notes,
+            quantity: qty,
+            transmission: draft.transmission,
+            arrivalDate: arrival,
+            soldDate: sold
+        )
+    }
+
+    func saveMotorInlineRow(motorID: Int64, draft: MotorInlineDraft) {
+        let database = self.database
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                guard let oldMotor = try await self.getMotor(id: motorID) else { return }
+
+                let serial = draft.serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                let configuration = draft.configuration.trimmingCharacters(in: .whitespacesAndNewlines)
+                let notes = draft.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                let quantityText = draft.quantity.trimmingCharacters(in: .whitespacesAndNewlines)
+                let transmission = draft.transmission.trimmingCharacters(in: .whitespacesAndNewlines)
+                let arrivalDateText = draft.arrivalDate.trimmingCharacters(in: .whitespacesAndNewlines)
+                let soldDateText = draft.soldDate.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                let shouldDeleteMotor =
+                    serial.isEmpty &&
+                    configuration.isEmpty &&
+                    notes.isEmpty &&
+                    quantityText.isEmpty &&
+                    transmission.isEmpty &&
+                    arrivalDateText.isEmpty &&
+                    soldDateText.isEmpty
+
+                if shouldDeleteMotor {
+                    try database.deleteMotor(id: motorID)
+                    await MainActor.run {
+                        self.removeMotorFromLocalCaches(motorID: motorID)
+                    }
+                    return
+                }
+
+                guard !serial.isEmpty else {
+                    await MainActor.run {
+                        self.setError("Номер двигателя не может быть пустым")
+                    }
+                    return
+                }
+
+                guard let quantity = Int(quantityText), quantity > 0 else {
+                    await MainActor.run {
+                        self.setError("Количество должно быть больше 0")
+                    }
+                    return
+                }
+
+                guard let arrivalDate = Self.cellEditDateFormatter.date(from: arrivalDateText) else {
+                    await MainActor.run {
+                        self.setError("Некорректная дата прихода")
+                    }
+                    return
+                }
+
+                let soldDate: Date?
+                if soldDateText.isEmpty {
+                    soldDate = nil
+                } else if let parsed = Self.cellEditDateFormatter.date(from: soldDateText) {
+                    soldDate = parsed
+                } else {
+                    await MainActor.run {
+                        self.setError("Некорректная дата продажи")
+                    }
+                    return
+                }
+
+                try database.updateMotorSerialCode(id: motorID, serialCode: serial)
+                try database.updateMotor(
+                    id: motorID,
+                    configuration: configuration,
+                    notes: notes,
+                    quantity: quantity,
+                    transmission: transmission,
+                    arrivalDate: arrivalDate,
+                    soldDate: soldDate
+                )
+
+                await MainActor.run {
+                    let updatedMotor = Motor(
+                        id: oldMotor.id,
+                        engineID: oldMotor.engineID,
+                        serialCode: serial,
+                        configuration: configuration,
+                        notes: notes,
+                        quantity: quantity,
+                        transmission: transmission,
+                        arrivalDate: arrivalDate,
+                        soldDate: soldDate,
+                        deletedAt: oldMotor.deletedAt,
+                        createdAt: oldMotor.createdAt,
+                        updatedAt: Date(),
+                        brandName: oldMotor.brandName,
+                        engineCode: oldMotor.engineCode
+                    )
+                    self.applyLocalMotorUpdate(updatedMotor)
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка сохранения: \(error.localizedDescription)")
                 }
             }
         }
@@ -1458,12 +1728,7 @@ final class AppViewModel: ObservableObject {
     private func registerCellEditUndo(
         motorID: Int64,
         oldMotor: Motor,
-        newConfiguration: String,
-        newNotes: String,
-        newQuantity: Int,
-        newTransmission: String,
-        newArrivalDate: Date,
-        newSoldDate: Date?
+        newMotor: Motor
     ) {
         undoManager.registerUndo(withTarget: self) { target in
             Task { @MainActor in
@@ -1481,18 +1746,18 @@ final class AppViewModel: ObservableObject {
                         Task { @MainActor in
                             try? target.database.updateMotor(
                                 id: motorID,
-                                configuration: newConfiguration,
-                                notes: newNotes,
-                                quantity: newQuantity,
-                                transmission: newTransmission,
-                                arrivalDate: newArrivalDate,
-                                soldDate: newSoldDate
+                                configuration: newMotor.configuration,
+                                notes: newMotor.notes,
+                                quantity: newMotor.quantity,
+                                transmission: newMotor.transmission,
+                                arrivalDate: newMotor.arrivalDate,
+                                soldDate: newMotor.soldDate
                             )
-                            target.refreshAll()
+                            target.applyLocalMotorUpdate(newMotor)
                         }
                     }
                     target.undoManager.setActionName("Редактирование ячейки")
-                    target.refreshAll()
+                    target.applyLocalMotorUpdate(oldMotor)
                 } catch {
                     target.errorMessage = "Ошибка отмены: \(error.localizedDescription)"
                 }

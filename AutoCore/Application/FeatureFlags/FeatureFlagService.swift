@@ -80,27 +80,14 @@ final class FeatureFlagService: ObservableObject {
         isInitialized = true
     }
     
-    /// Проверка, включен ли флаг
     func isEnabled(_ flag: Flag) -> Bool {
         let storedValue = flags[flag.rawValue]
-        let value = storedValue ?? flag.defaultValue
-        print("🔍 [FeatureFlagService] isEnabled: flag=\(flag.rawValue), value=\(value), stored=\(storedValue?.description ?? "nil"), default=\(flag.defaultValue)")
-        return value
+        return storedValue ?? flag.defaultValue
     }
-    
-    /// Включить/выключить флаг
+
     func setEnabled(_ flag: Flag, enabled: Bool) throws {
-        print("🎯 [FeatureFlagService] setEnabled called: flag=\(flag.rawValue), enabled=\(enabled)")
-        print("   📍 Current flags before: \(flags)")
         flags[flag.rawValue] = enabled
-        print("   📍 Current flags after: \(flags)")
-        do {
-            try database.saveFeatureFlag(name: flag.rawValue, enabled: enabled)
-            print("   ✅ Flag saved to database successfully")
-        } catch {
-            print("   ❌ ERROR saving flag to database: \(error)")
-            throw error
-        }
+        try database.saveFeatureFlag(name: flag.rawValue, enabled: enabled)
     }
     
     /// Получить все флаги

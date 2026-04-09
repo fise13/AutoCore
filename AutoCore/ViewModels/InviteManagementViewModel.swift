@@ -33,13 +33,27 @@ final class InviteManagementViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
+            await authViewModel.syncCompanyIdToFirestoreIfNeeded(companyId: user.companyId)
+            await authViewModel.refreshCurrentUser()
+            
+            guard let refreshedUser = authViewModel.currentUser else {
+                errorMessage = "Не удалось обновить профиль пользователя"
+                return
+            }
+            guard refreshedUser.role == .owner || refreshedUser.role == .admin else {
+                errorMessage = "Создавать invite-коды могут только владелец или администратор компании"
+                return
+            }
+            
             let invite = try await inviteService.createInvite(
-                companyId: user.companyId,
+                companyId: refreshedUser.companyId,
                 role: selectedRole,
-                createdBy: user.id,
+                createdBy: refreshedUser.id,
                 ttl: ttlHours * 3600
             )
             generatedCode = invite.code
+        } catch let error as AuthError {
+            errorMessage = error.localizedMessage
         } catch {
             errorMessage = error.localizedDescription
         }

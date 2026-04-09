@@ -1,82 +1,159 @@
 import SwiftUI
 
 #if os(iOS)
+import UIKit
 
 // MARK: - Adaptive Palette (Flowly)
 
 enum IOSPalette {
-    /// Flowly Blue — основной синий для хедеров и акцентов
-    static let flowlyBlue = Color(red: 0.04, green: 0.52, blue: 1)
-    static let flowlyBlueDark = Color(red: 0.08, green: 0.45, blue: 0.95)
+    // MARK: Accent / Brand
+
+    static let flowlyBlue = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.30, green: 0.56, blue: 1.0, alpha: 1)
+            : UIColor(red: 0.04, green: 0.45, blue: 0.95, alpha: 1)
+    })
+    static let flowlyBlueDark = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.22, green: 0.48, blue: 0.92, alpha: 1)
+            : UIColor(red: 0.02, green: 0.35, blue: 0.82, alpha: 1)
+    })
+    static let flowlyBlueSubtle = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.16, green: 0.22, blue: 0.38, alpha: 1)
+            : UIColor(red: 0.90, green: 0.94, blue: 1.0, alpha: 1)
+    })
+
+    // MARK: Backgrounds
 
     static let backgroundBase = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1)
-            : UIColor(red: 0.95, green: 0.95, blue: 0.97, alpha: 1)
+            ? UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1)
+            : UIColor(red: 0.96, green: 0.96, blue: 0.98, alpha: 1)
     })
     static let backgroundLayer = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.11, green: 0.11, blue: 0.13, alpha: 1)
+            ? UIColor(red: 0.11, green: 0.11, blue: 0.14, alpha: 1)
             : UIColor.white
     })
     static let backgroundElevated = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.14, green: 0.14, blue: 0.16, alpha: 1)
-            : UIColor(red: 0.98, green: 0.98, blue: 0.99, alpha: 1)
+            ? UIColor(red: 0.15, green: 0.15, blue: 0.18, alpha: 1)
+            : UIColor(red: 0.97, green: 0.97, blue: 0.99, alpha: 1)
     })
+    static let backgroundGrouped = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.09, green: 0.09, blue: 0.11, alpha: 1)
+            : UIColor(red: 0.94, green: 0.94, blue: 0.96, alpha: 1)
+    })
+
+    // MARK: Text
+
     static let textPrimary = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark ? .white : UIColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1)
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 0.96, alpha: 1)
+            : UIColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1)
     })
     static let textSecondary = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.65, green: 0.65, blue: 0.68, alpha: 1)
-            : UIColor(red: 0.45, green: 0.45, blue: 0.5, alpha: 1)
+            ? UIColor(red: 0.58, green: 0.58, blue: 0.64, alpha: 1)
+            : UIColor(red: 0.42, green: 0.42, blue: 0.48, alpha: 1)
     })
-    static let border = Color(uiColor: UIColor { trait in
+    static let textTertiary = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.12)
-            : UIColor(red: 0.78, green: 0.78, blue: 0.82, alpha: 0.6)
+            ? UIColor(red: 0.42, green: 0.42, blue: 0.48, alpha: 1)
+            : UIColor(red: 0.60, green: 0.60, blue: 0.65, alpha: 1)
     })
 
-    static let accentA = Color(red: 0.04, green: 0.52, blue: 1)
-    static let accentB = Color(red: 0.08, green: 0.45, blue: 0.95)
-    static let positive = Color(red: 0.2, green: 0.78, blue: 0.35)
-    static let negative = Color(red: 0.95, green: 0.29, blue: 0.38)
-    static let warning = Color(red: 0.98, green: 0.71, blue: 0.22)
+    // MARK: Borders & Separators
+
+    static let border = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.10)
+            : UIColor(red: 0.82, green: 0.82, blue: 0.86, alpha: 0.5)
+    })
+    static let separator = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.06)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    // MARK: Semantic Accent Colors
+
+    static let accentA = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.30, green: 0.56, blue: 1.0, alpha: 1)
+            : UIColor(red: 0.04, green: 0.45, blue: 0.95, alpha: 1)
+    })
+    static let accentB = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.22, green: 0.48, blue: 0.92, alpha: 1)
+            : UIColor(red: 0.02, green: 0.35, blue: 0.82, alpha: 1)
+    })
+
+    // MARK: Semantic Status Colors
+
+    static let positive = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.25, green: 0.82, blue: 0.45, alpha: 1)
+            : UIColor(red: 0.15, green: 0.70, blue: 0.30, alpha: 1)
+    })
+    static let negative = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 1.0, green: 0.38, blue: 0.42, alpha: 1)
+            : UIColor(red: 0.92, green: 0.22, blue: 0.28, alpha: 1)
+    })
+    static let warning = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 1.0, green: 0.78, blue: 0.30, alpha: 1)
+            : UIColor(red: 0.95, green: 0.65, blue: 0.10, alpha: 1)
+    })
+    static let info = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.40, green: 0.72, blue: 1.0, alpha: 1)
+            : UIColor(red: 0.20, green: 0.55, blue: 0.95, alpha: 1)
+    })
+
+    // MARK: Category Pastel Tints
 
     static let houseOrange = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.35, green: 0.28, blue: 0.2, alpha: 1)
-            : UIColor(red: 1, green: 0.92, blue: 0.8, alpha: 1)
+            ? UIColor(red: 0.30, green: 0.22, blue: 0.14, alpha: 1)
+            : UIColor(red: 1.0, green: 0.93, blue: 0.82, alpha: 1)
     })
     static let travelBlue = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.18, green: 0.25, blue: 0.35, alpha: 1)
-            : UIColor(red: 0.85, green: 0.92, blue: 1, alpha: 1)
+            ? UIColor(red: 0.14, green: 0.20, blue: 0.32, alpha: 1)
+            : UIColor(red: 0.86, green: 0.92, blue: 1.0, alpha: 1)
     })
     static let shoppingPink = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.35, green: 0.22, blue: 0.28, alpha: 1)
-            : UIColor(red: 1, green: 0.92, blue: 0.95, alpha: 1)
+            ? UIColor(red: 0.30, green: 0.16, blue: 0.22, alpha: 1)
+            : UIColor(red: 1.0, green: 0.92, blue: 0.94, alpha: 1)
     })
     static let healthGreen = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.18, green: 0.32, blue: 0.25, alpha: 1)
-            : UIColor(red: 0.85, green: 0.98, blue: 0.9, alpha: 1)
+            ? UIColor(red: 0.14, green: 0.28, blue: 0.20, alpha: 1)
+            : UIColor(red: 0.88, green: 0.98, blue: 0.90, alpha: 1)
     })
+
+    // MARK: Progress & Charts
 
     static let progressTrack = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.2)
-            : UIColor(red: 0.9, green: 0.9, blue: 0.92, alpha: 1)
+            ? UIColor.white.withAlphaComponent(0.12)
+            : UIColor(red: 0.90, green: 0.90, blue: 0.92, alpha: 1)
+    })
+    static let chartBar = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.30, green: 0.56, blue: 1.0, alpha: 1)
+            : UIColor(red: 0.04, green: 0.45, blue: 0.95, alpha: 1)
     })
 
+    // MARK: Gradients
+
     static let screenGradient = LinearGradient(
-        colors: [
-            IOSPalette.backgroundBase,
-            IOSPalette.backgroundLayer,
-            IOSPalette.backgroundBase
-        ],
+        colors: [IOSPalette.backgroundBase, IOSPalette.backgroundLayer, IOSPalette.backgroundBase],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -87,7 +164,6 @@ enum IOSPalette {
         endPoint: .trailing
     )
 
-    /// Fintech login screen gradient: bright blue → darker blue
     static let loginGradient = LinearGradient(
         colors: [
             Color(red: 0.184, green: 0.502, blue: 0.929),
@@ -103,7 +179,15 @@ enum IOSPalette {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+
+    static let headerGradient = LinearGradient(
+        colors: [IOSPalette.flowlyBlue, IOSPalette.flowlyBlueDark],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 }
+
+// MARK: - Motion
 
 enum IOSMotion {
     static let quick = Animation.easeInOut(duration: 0.18)
@@ -111,27 +195,72 @@ enum IOSMotion {
     static let emphasis = Animation.spring(response: 0.44, dampingFraction: 0.76)
     static let appear = Animation.spring(response: 0.5, dampingFraction: 0.8)
     static let chartBars = Animation.spring(response: 0.6, dampingFraction: 0.7)
+
+    static func adaptiveAnimation(_ animation: Animation) -> Animation {
+        if UIAccessibility.isReduceMotionEnabled {
+            return .easeOut(duration: 0.01)
+        }
+        return animation
+    }
 }
 
-/// iOS‑специфичная обёртка над дизайн-токенами.
+// MARK: - Design Tokens
+
 enum IOSDesign {
     enum Radius {
         static let chip: CGFloat = 999
         static let card: CGFloat = 20
         static let button: CGFloat = 16
         static let screenCard: CGFloat = 24
+        static let input: CGFloat = 12
+        static let badge: CGFloat = 8
     }
 
     enum Typography {
         static let largeTitle = Font.system(size: 32, weight: .bold, design: .rounded)
         static let title = Font.system(size: 26, weight: .semibold, design: .rounded)
+        static let title2 = Font.system(size: 22, weight: .semibold, design: .rounded)
         static let subtitle = Font.system(size: 15, weight: .regular)
         static let section = Font.system(size: 12, weight: .semibold)
         static let badge = Font.system(size: 11, weight: .medium)
         static let number = Font.system(size: 28, weight: .bold, design: .rounded)
         static let cardNumber = Font.system(size: 22, weight: .bold, design: .rounded)
         static let body = Font.system(size: 16, weight: .regular)
+        static let bodyMedium = Font.system(size: 16, weight: .medium)
+        static let caption = Font.system(size: 13, weight: .regular)
+        static let footnote = Font.system(size: 12, weight: .regular)
     }
+
+    enum Spacing {
+        static let xs: CGFloat = 4
+        static let sm: CGFloat = 8
+        static let md: CGFloat = 12
+        static let lg: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let xxl: CGFloat = 32
+    }
+}
+
+// MARK: - Haptic Feedback
+
+enum IOSHaptics {
+    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
+        UIImpactFeedbackGenerator(style: style).impactOccurred()
+    }
+
+    static func notification(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        UINotificationFeedbackGenerator().notificationOccurred(type)
+    }
+
+    static func selection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+}
+
+// MARK: - Accessibility Metrics
+
+enum IOSAccessibilityMetrics {
+    static let minTouchTarget: CGFloat = 44
 }
 
 // MARK: - Base Surfaces
@@ -150,7 +279,7 @@ struct IOSFlowlyHeader: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            IOSPalette.flowlyBlue
+            IOSPalette.headerGradient
                 .ignoresSafeArea(edges: .top)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -160,7 +289,10 @@ struct IOSFlowlyHeader: View {
                             Image(systemName: "chevron.left")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundStyle(.white)
+                                .frame(minWidth: IOSAccessibilityMetrics.minTouchTarget,
+                                       minHeight: IOSAccessibilityMetrics.minTouchTarget)
                         }
+                        .accessibilityLabel("Назад")
                     }
                     Spacer()
                 }
@@ -256,6 +388,7 @@ struct IOSProgressBar: View {
                     .frame(width: max(0, proxy.size.width * min(1, max(0, progress))))
             }
         }
+        .accessibilityValue("\(Int(progress * 100))%")
     }
 }
 
@@ -271,7 +404,7 @@ struct IOSSurfaceCard<Content: View>: View {
             .background(
                 RoundedRectangle(cornerRadius: IOSDesign.Radius.card, style: .continuous)
                     .fill(IOSPalette.backgroundLayer)
-                    .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 4)
+                    .shadow(color: Color.black.opacity(0.06), radius: 12, x: 0, y: 4)
             )
     }
 }
@@ -279,28 +412,38 @@ struct IOSSurfaceCard<Content: View>: View {
 // MARK: - Buttons
 
 struct IOSPrimaryButtonStyle: ButtonStyle {
+    var isLoading = false
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 16, weight: .semibold, design: .rounded))
-            .foregroundStyle(Color.white)
-            .padding(.vertical, 13)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
-                    .fill(IOSPalette.accentGradient)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 0.8)
-                    )
-                    .shadow(
-                        color: IOSPalette.accentA.opacity(configuration.isPressed ? 0.18 : 0.35),
-                        radius: configuration.isPressed ? 7 : 14,
-                        x: 0,
-                        y: configuration.isPressed ? 3 : 8
-                    )
-            )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(IOSMotion.standard, value: configuration.isPressed)
+        HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(0.8)
+            }
+            configuration.label
+        }
+        .font(.system(size: 16, weight: .semibold, design: .rounded))
+        .foregroundStyle(Color.white)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
+                .fill(IOSPalette.accentGradient)
+                .overlay(
+                    RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 0.8)
+                )
+                .shadow(
+                    color: IOSPalette.accentA.opacity(configuration.isPressed ? 0.18 : 0.35),
+                    radius: configuration.isPressed ? 7 : 14,
+                    x: 0,
+                    y: configuration.isPressed ? 3 : 8
+                )
+        )
+        .scaleEffect(configuration.isPressed ? 0.985 : 1)
+        .opacity(isLoading ? 0.85 : 1)
+        .animation(IOSMotion.standard, value: configuration.isPressed)
     }
 }
 
@@ -317,6 +460,26 @@ struct IOSSecondaryButtonStyle: ButtonStyle {
                     .overlay(
                         RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
                             .stroke(IOSPalette.border, lineWidth: 1)
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
+            .animation(IOSMotion.quick, value: configuration.isPressed)
+    }
+}
+
+struct IOSDestructiveButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(IOSPalette.negative)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
+                    .fill(IOSPalette.negative.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: IOSDesign.Radius.button, style: .continuous)
+                            .stroke(IOSPalette.negative.opacity(0.3), lineWidth: 1)
                     )
             )
             .scaleEffect(configuration.isPressed ? 0.99 : 1)
@@ -442,14 +605,19 @@ struct IOSMiniBarChart: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(accent)
                         .frame(width: barWidth, height: max(12, proxy.size.height * item))
-                        .animation(IOSMotion.chartBars.delay(Double(index) * 0.04), value: values)
+                        .animation(
+                            IOSMotion.adaptiveAnimation(IOSMotion.chartBars.delay(Double(index) * 0.04)),
+                            value: values
+                        )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .animation(IOSMotion.standard, value: values)
+            .animation(IOSMotion.adaptiveAnimation(IOSMotion.standard), value: values)
         }
     }
 }
+
+// MARK: - Animated Appear
 
 struct IOSAnimatedAppear: ViewModifier {
     let index: Int
@@ -460,9 +628,12 @@ struct IOSAnimatedAppear: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 16)
+            .offset(y: appeared ? 0 : (UIAccessibility.isReduceMotionEnabled ? 0 : 16))
             .onAppear {
-                withAnimation(IOSMotion.appear.delay(delayPerItem * Double(index))) {
+                let animation = UIAccessibility.isReduceMotionEnabled
+                    ? Animation.easeOut(duration: 0.12)
+                    : IOSMotion.appear.delay(delayPerItem * Double(index))
+                withAnimation(animation) {
                     appeared = true
                 }
             }
@@ -479,7 +650,7 @@ extension View {
 
 struct IOSTagChip: View {
     enum Style {
-        case neutral, positive, negative, accent
+        case neutral, positive, negative, accent, warning, info
 
         var foreground: Color {
             switch self {
@@ -487,15 +658,19 @@ struct IOSTagChip: View {
             case .positive: return IOSPalette.positive
             case .negative: return IOSPalette.negative
             case .accent: return IOSPalette.accentA
+            case .warning: return IOSPalette.warning
+            case .info: return IOSPalette.info
             }
         }
 
         var background: Color {
             switch self {
             case .neutral: return IOSPalette.backgroundElevated
-            case .positive: return IOSPalette.positive.opacity(0.18)
-            case .negative: return IOSPalette.negative.opacity(0.18)
-            case .accent: return IOSPalette.accentA.opacity(0.18)
+            case .positive: return IOSPalette.positive.opacity(0.15)
+            case .negative: return IOSPalette.negative.opacity(0.15)
+            case .accent: return IOSPalette.accentA.opacity(0.15)
+            case .warning: return IOSPalette.warning.opacity(0.15)
+            case .info: return IOSPalette.info.opacity(0.15)
             }
         }
     }
@@ -522,7 +697,7 @@ struct IOSTagChip: View {
                 .fill(style.background.opacity(isSelected ? 1.0 : 0.8))
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(style.foreground.opacity(isSelected ? 0.5 : 0.25), lineWidth: 1)
+                        .stroke(style.foreground.opacity(isSelected ? 0.5 : 0.2), lineWidth: 1)
                 )
         )
     }
@@ -544,7 +719,8 @@ struct IOSFlowlyTabBar: View {
         HStack(spacing: 0) {
             ForEach(Array(tabs.enumerated()), id: \.offset) { index, tab in
                 Button {
-                    withAnimation(IOSMotion.standard) {
+                    IOSHaptics.selection()
+                    withAnimation(IOSMotion.adaptiveAnimation(IOSMotion.standard)) {
                         onSelect(index)
                     }
                 } label: {
@@ -555,13 +731,16 @@ struct IOSFlowlyTabBar: View {
                             .font(.system(size: 10, weight: .medium))
                     }
                     .frame(maxWidth: .infinity)
+                    .frame(minHeight: IOSAccessibilityMetrics.minTouchTarget)
                     .foregroundStyle(selectedIndex == index ? IOSPalette.flowlyBlue : IOSPalette.textSecondary)
                     .scaleEffect(selectedIndex == index ? 1.05 : 1)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(tab.label)
+                .accessibilityAddTraits(selectedIndex == index ? .isSelected : [])
             }
         }
-        .animation(IOSMotion.standard, value: selectedIndex)
+        .animation(IOSMotion.adaptiveAnimation(IOSMotion.standard), value: selectedIndex)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -600,5 +779,182 @@ struct IOSSectionHeader: View {
     }
 }
 
-#endif
+// MARK: - Empty State
 
+struct IOSEmptyStateView: View {
+    let icon: String
+    let title: String
+    let message: String
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(IOSPalette.textTertiary)
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(IOSDesign.Typography.bodyMedium)
+                    .foregroundStyle(IOSPalette.textPrimary)
+                Text(message)
+                    .font(IOSDesign.Typography.caption)
+                    .foregroundStyle(IOSPalette.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    Text(actionTitle)
+                }
+                .buttonStyle(IOSOutlinedBlueButtonStyle())
+                .frame(width: 200)
+            }
+        }
+        .padding(.vertical, Spacing.x3)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Inline Status Banner
+
+struct IOSStatusBanner: View {
+    enum BannerType { case success, error, warning, info }
+
+    let type: BannerType
+    let message: String
+    var onDismiss: (() -> Void)?
+
+    private var icon: String {
+        switch type {
+        case .success: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch type {
+        case .success: return IOSPalette.positive
+        case .error: return IOSPalette.negative
+        case .warning: return IOSPalette.warning
+        case .info: return IOSPalette.info
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+            Text(message)
+                .font(IOSDesign.Typography.caption)
+                .foregroundStyle(IOSPalette.textPrimary)
+            Spacer()
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(IOSPalette.textSecondary)
+                }
+            }
+        }
+        .padding(Spacing.x2)
+        .background(
+            RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+                .fill(tint.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+                        .stroke(tint.opacity(0.2), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Shimmer Loading Placeholder
+
+struct IOSShimmerView: View {
+    @State private var phase: CGFloat = 0
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+            .fill(IOSPalette.backgroundElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: IOSDesign.Radius.input, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.clear,
+                                IOSPalette.backgroundLayer.opacity(0.6),
+                                Color.clear
+                            ],
+                            startPoint: .init(x: phase - 0.5, y: 0.5),
+                            endPoint: .init(x: phase + 0.5, y: 0.5)
+                        )
+                    )
+            )
+            .onAppear {
+                withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                    phase = 2
+                }
+            }
+    }
+}
+
+// MARK: - Skeleton Loading Card
+
+struct IOSSkeletonCard: View {
+    var lineCount: Int = 3
+
+    var body: some View {
+        IOSFlowlyCard {
+            VStack(alignment: .leading, spacing: 12) {
+                IOSShimmerView()
+                    .frame(height: 16)
+                    .frame(maxWidth: 120)
+                ForEach(0..<lineCount, id: \.self) { i in
+                    IOSShimmerView()
+                        .frame(height: 12)
+                        .frame(maxWidth: i == lineCount - 1 ? 180 : .infinity)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Sync Status Indicator
+
+struct IOSSyncStatusView: View {
+    enum SyncState { case synced, syncing, offline, error }
+
+    let state: SyncState
+
+    private var config: (icon: String, text: String, color: Color) {
+        switch state {
+        case .synced: return ("checkmark.icloud.fill", "Синхронизировано", IOSPalette.positive)
+        case .syncing: return ("arrow.triangle.2.circlepath.icloud.fill", "Синхронизация…", IOSPalette.info)
+        case .offline: return ("icloud.slash.fill", "Офлайн", IOSPalette.warning)
+        case .error: return ("exclamationmark.icloud.fill", "Ошибка синхронизации", IOSPalette.negative)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: config.icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(config.color)
+            Text(config.text)
+                .font(IOSDesign.Typography.footnote)
+                .foregroundStyle(config.color)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule(style: .continuous)
+                .fill(config.color.opacity(0.1))
+        )
+    }
+}
+
+#endif

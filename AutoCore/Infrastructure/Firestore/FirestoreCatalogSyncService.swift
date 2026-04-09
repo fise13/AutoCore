@@ -15,9 +15,10 @@ final class FirestoreCatalogSyncService {
         engines: [Engine],
         motors: [Motor]
     ) async {
-        guard !companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let normalizedCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCompanyId.isEmpty, normalizedCompanyId != "default" else { return }
 
-        let fingerprint = "\(companyId)|b:\(brands.count)|e:\(engines.count)|m:\(motors.count)|mx:\(motors.map(\.updatedAt).max()?.timeIntervalSince1970 ?? 0)"
+        let fingerprint = "\(normalizedCompanyId)|b:\(brands.count)|e:\(engines.count)|m:\(motors.count)|mx:\(motors.map(\.updatedAt).max()?.timeIntervalSince1970 ?? 0)"
         if lastFingerprint == fingerprint {
             return
         }
@@ -27,9 +28,9 @@ final class FirestoreCatalogSyncService {
             let batch = db.batch()
 
             for brand in brands {
-                let ref = db.collection("brands").document("brand_\(brand.id)")
+                let ref = db.collection("brands").document("\(normalizedCompanyId)_brand_\(brand.id)")
                 batch.setData([
-                    "companyId": companyId,
+                    "companyId": normalizedCompanyId,
                     "localId": brand.id,
                     "name": brand.name,
                     "updatedAt": FieldValue.serverTimestamp()
@@ -37,9 +38,9 @@ final class FirestoreCatalogSyncService {
             }
 
             for engine in engines {
-                let ref = db.collection("engines").document("engine_\(engine.id)")
+                let ref = db.collection("engines").document("\(normalizedCompanyId)_engine_\(engine.id)")
                 batch.setData([
-                    "companyId": companyId,
+                    "companyId": normalizedCompanyId,
                     "localId": engine.id,
                     "brandId": engine.brandID,
                     "code": engine.code,
@@ -48,9 +49,9 @@ final class FirestoreCatalogSyncService {
             }
 
             for motor in motors {
-                let ref = db.collection("motors").document("motor_\(motor.id)")
+                let ref = db.collection("motors").document("\(normalizedCompanyId)_motor_\(motor.id)")
                 batch.setData([
-                    "companyId": companyId,
+                    "companyId": normalizedCompanyId,
                     "localId": motor.id,
                     "engineId": motor.engineID,
                     "serialCode": motor.serialCode,

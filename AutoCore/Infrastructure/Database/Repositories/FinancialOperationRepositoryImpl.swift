@@ -39,17 +39,19 @@ final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
                 companyId: companyId
             )
         } else {
-            // Операции нельзя редактировать - только создавать
-            throw AppError.validationError(message: "Финансовые операции нельзя редактировать")
+            return try update(operation)
         }
         
         let saved = try findByID(operationID) ?? operation
         
         // Асинхронный пуш в Firestore (если сервис доступен и companyId задан)
         if let financialSync = financialSync, !companyId.isEmpty {
-            Task { @MainActor in
+            Task {
                 do {
-                    _ = try await financialSync.pushOperation(saved, companyId: companyId)
+                    let cloudId = try await financialSync.pushOperation(saved, companyId: companyId)
+                    if !cloudId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        try database.setFinancialOperationCloudDocumentId(id: saved.id, cloudDocumentId: cloudId)
+                    }
                 } catch {
                     LoggingService.shared.error("Firestore PUSH error in FinancialOperationRepositoryImpl.save", error: error)
                 }
@@ -57,6 +59,84 @@ final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
         }
         
         return saved
+    }
+
+    func update(_ operation: FinancialOperationEntity) throws -> FinancialOperationEntity {
+        guard operation.id > 0 else {
+            throw AppError.validationError(message: "Нельзя обновить операцию без id")
+        }
+        try database.updateFinancialOperation(
+            id: operation.id,
+            amount: operation.amount,
+            account: operation.account.rawValue,
+            category: operation.category,
+            description: operation.description,
+            comment: operation.comment
+        )
+        let updated = try findByID(operation.id) ?? operation
+        if let financialSync = financialSync, !companyId.isEmpty {
+            Task {
+                guard let cloudId = updated.cloudDocumentId, !cloudId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    LoggingService.shared.info("Firestore UPDATE skipped: operation id=\(updated.id) has no cloudDocumentId yet")
+                    return
+                }
+                do {
+                    try await financialSync.updateOperation(
+                        documentId: cloudId,
+                        companyId: companyId,
+                        fields: [
+                            "amount": NSDecimalNumber(decimal: updated.amount).doubleValue,
+                            "account": updated.account.rawValue,
+                            "category": updated.category ?? "",
+                            "description": updated.description,
+                            "details": updated.description,
+                            "comment": updated.comment
+                        ]
+                    )
+                } catch {
+                    LoggingService.shared.error("Firestore UPDATE error in FinancialOperationRepositoryImpl.update", error: error)
+                }
+            }
+        }
+        return updated
+    }
+
+    func delete(_ operation: FinancialOperationEntity) throws {
+        guard operation.id > 0 else {
+            throw AppError.validationError(message: "Нельзя удалить операцию без id")
+        }
+        try database.deleteFinancialOperation(id: operation.id)
+        if let financialSync = financialSync, !companyId.isEmpty {
+            Task {
+                do {
+                    try await financialSync.deleteOperation(operation, companyId: companyId)
+                } catch {
+                    LoggingService.shared.error("Firestore DELETE error in FinancialOperationRepositoryImpl.delete", error: error)
+                }
+            }
+        }
+    }
+
+    func deleteAll(companyId: String?) throws {
+        let cid = companyId ?? self.companyId
+        try database.clearFinancialOperations(companyId: cid)
+        if let financialSync = financialSync, !cid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Task { @MainActor in
+                do {
+                    let cloudOps = try await financialSync.pullOperations(companyId: cid, since: nil)
+                    for op in cloudOps {
+                        guard let docId = op.cloudDocumentId else { continue }
+                        do {
+                            try await financialSync.deleteOperation(documentId: docId, companyId: cid)
+                        } catch {
+                            LoggingService.shared.error("Firestore DELETE ALL: failed to remove docId=\(docId)", error: error)
+                        }
+                    }
+                } catch {
+                    LoggingService.shared.error("Firestore DELETE ALL: pull failed", error: error)
+                }
+            }
+        }
     }
     
     func findByID(_ id: Int64) throws -> FinancialOperationEntity? {
@@ -98,6 +178,7 @@ final class FinancialOperationRepositoryImpl: FinancialOperationRepository {
         
         return FinancialOperationEntity(
             id: operation.id,
+            cloudDocumentId: operation.cloudDocumentId,
             type: type,
             amount: operation.amount,
             paymentMethod: paymentMethod,

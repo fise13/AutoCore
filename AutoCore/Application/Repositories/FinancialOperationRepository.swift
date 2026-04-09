@@ -3,6 +3,9 @@ import Foundation
 /// Repository Interface for Financial Operation Entity
 protocol FinancialOperationRepository {
     func save(_ operation: FinancialOperationEntity) throws -> FinancialOperationEntity
+    func update(_ operation: FinancialOperationEntity) throws -> FinancialOperationEntity
+    func delete(_ operation: FinancialOperationEntity) throws
+    func deleteAll(companyId: String?) throws
     func findByID(_ id: Int64) throws -> FinancialOperationEntity?
     func findAll(filter: FinancialOperationFilter) throws -> [FinancialOperationEntity]
     func calculateCashBalance(account: FinancialOperationEntity.Account, upToDate: Date?) throws -> Decimal

@@ -15,6 +15,8 @@ final class AccountingViewModel: ObservableObject {
     @Published var filterFromDate: Date? = nil
     @Published var filterToDate: Date? = nil
     @Published var searchText: String = ""
+    @Published var selectedOperationID: Int64?
+    @Published var errorMessage: String?
     
     let financialOperationRepository: FinancialOperationRepository
     private let calculateCashBalanceUseCase: CalculateCashBalanceUseCase
@@ -59,7 +61,7 @@ final class AccountingViewModel: ObservableObject {
                 // Загружаем операции с фильтрами
                 refreshOperations()
             } catch {
-                print("Ошибка загрузки данных бухгалтерии: \(error)")
+                errorMessage = "Ошибка загрузки данных бухгалтерии: \(error.localizedDescription)"
             }
         }
     }
@@ -114,7 +116,88 @@ final class AccountingViewModel: ObservableObject {
                 
                 operations = mappedOperations
             } catch {
-                print("Ошибка загрузки операций: \(error)")
+                errorMessage = "Ошибка загрузки операций: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func selectedOperation() -> FinancialOperation? {
+        guard let selectedOperationID else { return nil }
+        return operations.first(where: { $0.id == selectedOperationID })
+    }
+
+    func updateOperation(
+        _ operation: FinancialOperation,
+        amount: Decimal,
+        account: FinancialOperationEntity.Account,
+        category: String?,
+        description: String,
+        comment: String
+    ) {
+        Task {
+            do {
+                let entity = FinancialOperationEntity(
+                    id: operation.id,
+                    cloudDocumentId: operation.cloudDocumentId,
+                    type: operation.type,
+                    amount: amount,
+                    paymentMethod: operation.paymentMethod,
+                    cashReceived: operation.cashReceived,
+                    changeGiven: operation.changeGiven,
+                    account: account,
+                    relatedMotorID: operation.relatedMotorID,
+                    createdAt: operation.createdAt,
+                    createdByUser: operation.createdByUser,
+                    comment: comment,
+                    source: operation.source,
+                    details: description,
+                    category: category,
+                    description: description
+                )
+                _ = try financialOperationRepository.update(entity)
+                refreshAll()
+            } catch {
+                errorMessage = "Не удалось обновить операцию: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deleteOperation(_ operation: FinancialOperation) {
+        Task {
+            do {
+                let entity = FinancialOperationEntity(
+                    id: operation.id,
+                    cloudDocumentId: operation.cloudDocumentId,
+                    type: operation.type,
+                    amount: operation.amount,
+                    paymentMethod: operation.paymentMethod,
+                    cashReceived: operation.cashReceived,
+                    changeGiven: operation.changeGiven,
+                    account: operation.account,
+                    relatedMotorID: operation.relatedMotorID,
+                    createdAt: operation.createdAt,
+                    createdByUser: operation.createdByUser,
+                    comment: operation.comment,
+                    source: operation.source,
+                    details: operation.details,
+                    category: operation.category,
+                    description: operation.description
+                )
+                try financialOperationRepository.delete(entity)
+                refreshAll()
+            } catch {
+                errorMessage = "Не удалось удалить операцию: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deleteAllOperations(companyId: String?) {
+        Task {
+            do {
+                try financialOperationRepository.deleteAll(companyId: companyId)
+                refreshAll()
+            } catch {
+                errorMessage = "Не удалось очистить бухгалтерию: \(error.localizedDescription)"
             }
         }
     }

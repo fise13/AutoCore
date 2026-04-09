@@ -13,9 +13,12 @@ struct SidebarView: View {
     let onBrandAndEngineChange: (Int64?, Int64?) -> Void
     let onClearFilters: () -> Void
     let onCreateCategory: () -> Void
+    let onRenameBrand: (Int64, String) -> Void
 
     @State private var expandedBrands: Set<Int64> = []
     @State private var hoveredItem: String? = nil
+    @State private var brandToRename: Brand?
+    @State private var renameBrandText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -213,6 +216,10 @@ struct SidebarView: View {
                                             }
                                         }
                                     )
+                                    .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                        brandToRename = brand
+                                        renameBrandText = brand.name
+                                    })
                                 }
                             }
                         }
@@ -256,6 +263,27 @@ struct SidebarView: View {
                 .shadow(color: .black.opacity(0.1), radius: 2, x: 1, y: 0),
             alignment: .trailing
         )
+        .alert("Изменить бренд", isPresented: Binding(
+            get: { brandToRename != nil },
+            set: { if !$0 { brandToRename = nil } }
+        )) {
+            TextField("Новое имя бренда", text: $renameBrandText)
+            Button("Отмена", role: .cancel) {
+                brandToRename = nil
+            }
+            Button("Сохранить") {
+                guard let brand = brandToRename else { return }
+                let trimmed = renameBrandText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed != brand.name else {
+                    brandToRename = nil
+                    return
+                }
+                onRenameBrand(brand.id, trimmed)
+                brandToRename = nil
+            }
+        } message: {
+            Text("Двойной клик по бренду открывает это окно редактирования.")
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import Foundation
 /// Представляет финансовую операцию (продажа, возврат, расход)
 struct FinancialOperationEntity {
     let id: Int64
+    let cloudDocumentId: String?
     let type: OperationType
     let amount: Decimal
     let paymentMethod: PaymentMethod
@@ -18,6 +19,42 @@ struct FinancialOperationEntity {
     let details: String  // Детали операции (например: "Мотор #123", "Оплата аренды")
     let category: String?  // Категория расхода (свободный текст, пользовательский)
     let description: String  // Человекочитаемое описание операции (обязательно для расходов)
+    
+    init(
+        id: Int64,
+        cloudDocumentId: String? = nil,
+        type: OperationType,
+        amount: Decimal,
+        paymentMethod: PaymentMethod,
+        cashReceived: Decimal?,
+        changeGiven: Decimal?,
+        account: Account,
+        relatedMotorID: Int64?,
+        createdAt: Date,
+        createdByUser: String,
+        comment: String,
+        source: String,
+        details: String,
+        category: String?,
+        description: String
+    ) {
+        self.id = id
+        self.cloudDocumentId = cloudDocumentId
+        self.type = type
+        self.amount = amount
+        self.paymentMethod = paymentMethod
+        self.cashReceived = cashReceived
+        self.changeGiven = changeGiven
+        self.account = account
+        self.relatedMotorID = relatedMotorID
+        self.createdAt = createdAt
+        self.createdByUser = createdByUser
+        self.comment = comment
+        self.source = source
+        self.details = details
+        self.category = category
+        self.description = description
+    }
     
     /// Тип операции
     enum OperationType: String, Codable {

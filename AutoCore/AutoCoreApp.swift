@@ -113,7 +113,7 @@ struct AutoCoreApp: App {
                 .keyboardShortcut("e", modifiers: .command)
             }
             
-            // Меню "Вид"
+            #if DEBUG
             CommandGroup(after: .toolbar) {
                 Divider()
                 
@@ -122,6 +122,7 @@ struct AutoCoreApp: App {
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             }
+            #endif
 
             CommandMenu(L10n.Menu.motorsMenu) {
                 Button(L10n.Menu.addMotor) {
@@ -134,7 +135,7 @@ struct AutoCoreApp: App {
                 Button(L10n.Menu.markSold) {
                     NotificationCenter.default.post(name: NSNotification.Name("SellMotor"), object: nil)
                 }
-                .keyboardShortcut("s", modifiers: .command)
+                .keyboardShortcut("s", modifiers: [.command, .shift])
 
                 Button(L10n.Menu.duplicate) {
                     NotificationCenter.default.post(name: NSNotification.Name("DuplicateMotor"), object: nil)
@@ -152,6 +153,13 @@ struct AutoCoreApp: App {
                     NotificationCenter.default.post(name: NSNotification.Name("OpenExport"), object: nil)
                 }
                 .keyboardShortcut("e", modifiers: .command)
+            }
+
+            CommandGroup(replacing: .saveItem) {
+                Button("Сохранить изменения") {
+                    NotificationCenter.default.post(name: .motorGridSaveRequested, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: .command)
             }
         }
         

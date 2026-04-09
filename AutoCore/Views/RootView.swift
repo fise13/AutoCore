@@ -197,7 +197,8 @@ struct RootView: View {
                         featureFlagService: featureFlagService,
                         settingsService: settingsService,
                         recoveryState: appState.recoveryState,
-                        databaseService: appViewModel.database
+                        databaseService: appViewModel.database,
+                        companyId: appState.authViewModel?.currentUser?.companyId
                     )
                 }
             }
@@ -273,7 +274,7 @@ struct RootView: View {
             onAdd: { isShowingAddMotor = true },
             onSell: appViewModel.selectedMotorID != nil ? {
                 if let selectedID = appViewModel.selectedMotorID,
-                   let motor = appViewModel.filteredMotors.first(where: { $0.id == selectedID }) {
+                   let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == selectedID }) {
                     appViewModel.toggleSold(for: motor)
                 }
             } : nil,
@@ -324,6 +325,9 @@ struct RootView: View {
                 },
                 onCreateCategory: {
                     showCreateCategoryDialog()
+                },
+                onRenameBrand: { brandID, newName in
+                    appViewModel.renameBrand(brandID: brandID, newName: newName)
                 }
             )
         } detail: {
@@ -409,12 +413,11 @@ struct RootView: View {
                 }
             default:
                 MotorListViewExcel(
-                    motors: appViewModel.convertToDTOs(motors: appViewModel.filteredMotors),
-                    selectedMotorIDs: $appViewModel.selectedMotorIDs,
+                    motors: appViewModel.cachedFilteredMotorDTOs,
                     isLoading: appViewModel.isLoading,
-                    totalCount: appViewModel.filteredMotors.count,
+                    totalCount: appViewModel.cachedFilteredMotors.count,
                     onToggleSold: { motorID in
-                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
                             appViewModel.toggleSold(for: motor)
                         }
                     },
@@ -422,20 +425,23 @@ struct RootView: View {
                         appViewModel.loadMoreMotorsIfNeeded()
                     },
                     onDuplicate: { motorID in
-                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
                             duplicateMotor(motor)
                         }
                     },
                     onExportSelected: { motorID in
-                        if let motor = appViewModel.filteredMotors.first(where: { $0.id == motorID }) {
+                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
                             exportSelectedMotor(motor)
                         }
                     },
                     onOpenDetails: { motorID in
                         appViewModel.selectedMotorID = motorID
                     },
-                    onCellSave: { motorID, field, value in
-                        appViewModel.updateMotorCell(motorID: motorID, field: field, value: value)
+                    onSaveMotorRow: { motorID, draft in
+                        appViewModel.saveMotorInlineRow(motorID: motorID, draft: draft)
+                    },
+                    onCreateMotor: { draft in
+                        appViewModel.createMotorInline(draft: draft)
                     }
                 )
             }
