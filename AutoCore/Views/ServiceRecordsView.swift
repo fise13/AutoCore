@@ -14,6 +14,7 @@ struct ServiceRecordsView: View {
     
     // Callback для обновления ячеек
     let onCellSave: ((Int64, String, String) -> Void)?
+    let onDeleteRecord: ((Int64) -> Void)?
     
     @StateObject private var editViewModel = InlineEditViewModel()
     @StateObject private var tableViewModel = ServiceRecordsTableViewModel()
@@ -155,7 +156,7 @@ struct ServiceRecordsView: View {
     
     // Helper для создания редактируемой ячейки
     @ViewBuilder
-    private func makeEditableCell(item: RecordDisplayItem, fieldKey: String, value: String, field: EditableCellState.EditableField) -> EditableSpecificRecordCell {
+    private func makeEditableCell(item: RecordDisplayItem, fieldKey: String, value: String, field: EditableCellState.EditableField) -> some View {
         EditableSpecificRecordCell(
             recordID: item.id,
             fieldKey: fieldKey,
@@ -175,6 +176,15 @@ struct ServiceRecordsView: View {
                 editViewModel.cancelEditing()
             }
         )
+        .contextMenu {
+            if let onDeleteRecord {
+                Button(role: .destructive) {
+                    onDeleteRecord(item.id)
+                } label: {
+                    Label("Удалить запись", systemImage: "trash")
+                }
+            }
+        }
     }
     
     // Стандартная таблица для старых service_records
@@ -183,6 +193,15 @@ struct ServiceRecordsView: View {
         Table(tableViewModel.allRecords) {
             TableColumn("Номер двигателя") { item in
                 Text(item.serialCode)
+                    .contextMenu {
+                        if let onDeleteRecord {
+                            Button(role: .destructive) {
+                                onDeleteRecord(item.id)
+                            } label: {
+                                Label("Удалить запись", systemImage: "trash")
+                            }
+                        }
+                    }
             }
             TableColumn("Лист") { item in
                 Text(item.sheetName)

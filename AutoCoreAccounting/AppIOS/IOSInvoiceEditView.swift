@@ -23,7 +23,12 @@ struct IOSInvoiceEditView: View {
     @State private var manualConfirmed = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var activeMotorLookupRow: Int?
+    @State private var motorLookupResults: [FirestoreMotorLookupResult] = []
+    @State private var isMotorLookupLoading = false
+    @State private var motorLookupTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
+    private let motorLookupService = FirestoreMotorLookupService()
     
     private let currencyFormatter: NumberFormatter = {
         let f = NumberFormatter()
@@ -303,19 +308,98 @@ struct IOSInvoiceEditView: View {
                 }
             }
 
-            if documentKind == .invoice && invoiceType == .income {
+            if invoiceType == .income {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Номер мотора (для продажи)")
+                    Text("Мотор для продажи")
                         .font(.caption2)
                         .foregroundStyle(IOSPalette.textSecondary)
                     TextField("Например: ABC12345", text: Binding(
                         get: { item.motorSerial ?? "" },
                         set: { newVal in
-                            updateItem(at: index) { $0.motorSerial = newVal.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            let normalized = newVal.trimmingCharacters(in: .whitespacesAndNewlines)
+                            updateItem(at: index) {
+                                $0.motorSerial = normalized
+                                // Если пользователь руками меняет серийник, сбрасываем явную связь.
+                                if $0.selectedMotorSerial != normalized {
+                                    $0.selectedMotorLocalId = nil
+                                    $0.selectedMotorCloudId = nil
+                                    $0.selectedMotorSerial = nil
+                                }
+                            }
+                            activeMotorLookupRow = index
+                            scheduleMotorLookup(for: index, query: normalized)
                         }
                     ))
                     .textFieldStyle(.roundedBorder)
                     .font(.subheadline)
+
+                    if let selectedSerial = item.selectedMotorSerial, !selectedSerial.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(IOSPalette.positive)
+                            Text("Выбран мотор: \(selectedSerial)")
+                                .font(.caption)
+                                .foregroundStyle(IOSPalette.textPrimary)
+                            Spacer()
+                            Button("Сбросить") {
+                                updateItem(at: index) {
+                                    $0.selectedMotorLocalId = nil
+                                    $0.selectedMotorCloudId = nil
+                                    $0.selectedMotorSerial = nil
+                                }
+                            }
+                            .font(.caption)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(IOSPalette.flowlyBlue)
+                        }
+                        .padding(.top, 2)
+                    }
+
+                    if activeMotorLookupRow == index {
+                        if isMotorLookupLoading {
+                            ProgressView("Поиск мотора…")
+                                .font(.caption)
+                                .tint(IOSPalette.flowlyBlue)
+                        } else if !motorLookupResults.isEmpty {
+                            VStack(spacing: 6) {
+                                ForEach(motorLookupResults) { motor in
+                                    Button {
+                                        applySelectedMotor(motor, at: index)
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: motor.isSold ? "checkmark.seal.fill" : "shippingbox.fill")
+                                                .foregroundStyle(motor.isSold ? IOSPalette.warning : IOSPalette.info)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(motor.serialCode)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(IOSPalette.textPrimary)
+                                                Text([motor.brandName, motor.engineCode].filter { !$0.isEmpty }.joined(separator: " • "))
+                                                    .font(.caption)
+                                                    .foregroundStyle(IOSPalette.textSecondary)
+                                            }
+                                            Spacer()
+                                            if motor.isSold {
+                                                Text("Уже продан")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(IOSPalette.warning)
+                                            } else {
+                                                Text("Доступен")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(IOSPalette.positive)
+                                            }
+                                        }
+                                        .padding(8)
+                                        .background(IOSPalette.backgroundElevated)
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(motor.isSold)
+                                    .opacity(motor.isSold ? 0.45 : 1.0)
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
                 }
             }
         }
@@ -329,6 +413,48 @@ struct IOSInvoiceEditView: View {
         var copy = items[index]
         block(&copy)
         items[index] = copy
+    }
+
+    private func scheduleMotorLookup(for index: Int, query: String) {
+        motorLookupTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            motorLookupResults = []
+            isMotorLookupLoading = false
+            return
+        }
+
+        isMotorLookupLoading = true
+        motorLookupTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let results = try await motorLookupService.searchMotors(companyId: companyId, query: trimmed)
+                await MainActor.run {
+                    guard activeMotorLookupRow == index else { return }
+                    motorLookupResults = results
+                    isMotorLookupLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard activeMotorLookupRow == index else { return }
+                    motorLookupResults = []
+                    isMotorLookupLoading = false
+                }
+            }
+        }
+    }
+
+    private func applySelectedMotor(_ motor: FirestoreMotorLookupResult, at index: Int) {
+        updateItem(at: index) {
+            $0.motorSerial = motor.serialCode
+            $0.selectedMotorLocalId = motor.localId
+            $0.selectedMotorCloudId = motor.id
+            $0.selectedMotorSerial = motor.serialCode
+        }
+        activeMotorLookupRow = nil
+        motorLookupResults = []
+        isMotorLookupLoading = false
     }
     
     private func saveAndCreate() {

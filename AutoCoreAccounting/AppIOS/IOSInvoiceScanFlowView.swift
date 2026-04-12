@@ -7,6 +7,8 @@
 
 import SwiftUI
 import PhotosUI
+import UIKit
+import VisionKit
 
 #if os(iOS)
 
@@ -16,6 +18,11 @@ struct IOSInvoiceScanFlowView: View {
     var onDismiss: () -> Void
     
     @State private var selectedItem: PhotosPickerItem?
+    @State private var capturedPhoto: UIImage?
+    @State private var scannedDocumentImage: UIImage?
+    @State private var isSourceDialogPresented = false
+    @State private var isCameraPresented = false
+    @State private var isDocumentScannerPresented = false
     @StateObject private var viewModel = IOSInvoiceScanViewModel()
     @Environment(\.dismiss) private var dismiss
     
@@ -52,6 +59,51 @@ struct IOSInvoiceScanFlowView: View {
             }
             .onChange(of: selectedItem) { _, newValue in
                 Task { await loadAndScan(from: newValue) }
+            }
+            .onChange(of: capturedPhoto) { _, image in
+                guard let image else { return }
+                Task { await viewModel.processImage(image) }
+            }
+            .onChange(of: scannedDocumentImage) { _, image in
+                guard let image else { return }
+                Task { await viewModel.processImage(image) }
+            }
+            .confirmationDialog(
+                "Источник накладной",
+                isPresented: $isSourceDialogPresented,
+                titleVisibility: .visible
+            ) {
+                PhotosPicker(
+                    selection: $selectedItem,
+                    matching: .images,
+                    photoLibrary: .shared()
+                ) {
+                    Label("Выбрать из фото", systemImage: "photo.on.rectangle.angled")
+                }
+
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button {
+                        isCameraPresented = true
+                    } label: {
+                        Label("Сделать фото", systemImage: "camera")
+                    }
+
+                    if VNDocumentCameraViewController.isSupported {
+                        Button {
+                            isDocumentScannerPresented = true
+                        } label: {
+                            Label("Сделать документ", systemImage: "doc.text.viewfinder")
+                        }
+                    }
+                }
+
+                Button("Отмена", role: .cancel) {}
+            }
+            .sheet(isPresented: $isCameraPresented) {
+                IOSImageCameraSheet(image: $capturedPhoto)
+            }
+            .sheet(isPresented: $isDocumentScannerPresented) {
+                IOSDocumentScannerSheet(image: $scannedDocumentImage)
             }
         }
     }
@@ -94,12 +146,10 @@ struct IOSInvoiceScanFlowView: View {
                     .cornerRadius(20)
                     Spacer(minLength: 0)
                 } else {
-                    PhotosPicker(
-                        selection: $selectedItem,
-                        matching: .images,
-                        photoLibrary: .shared()
-                    ) {
-                        Label("Выбрать фото накладной", systemImage: "photo.on.rectangle.angled")
+                    Button {
+                        isSourceDialogPresented = true
+                    } label: {
+                        Label("Добавить накладную", systemImage: "plus.viewfinder")
                             .font(.headline)
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -109,7 +159,7 @@ struct IOSInvoiceScanFlowView: View {
                     }
                     .buttonStyle(.plain)
                     
-                    Text("Или сделайте скриншот накладной и выберите его здесь")
+                    Text("Можно выбрать фото, сделать фото камерой или скан документа через VisionKit")
                         .font(.caption)
                         .foregroundStyle(IOSPalette.textSecondary)
                         .multilineTextAlignment(.center)
@@ -138,6 +188,96 @@ struct IOSInvoiceScanFlowView: View {
             }
         } catch {
             await MainActor.run { viewModel.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+private struct IOSImageCameraSheet: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let parent: IOSImageCameraSheet
+
+        init(parent: IOSImageCameraSheet) {
+            self.parent = parent
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.image = image
+            }
+            parent.dismiss()
+        }
+    }
+}
+
+private struct IOSDocumentScannerSheet: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let controller = VNDocumentCameraViewController()
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+
+    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        private let parent: IOSDocumentScannerSheet
+
+        init(parent: IOSDocumentScannerSheet) {
+            self.parent = parent
+        }
+
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+            parent.dismiss()
+        }
+
+        func documentCameraViewController(
+            _ controller: VNDocumentCameraViewController,
+            didFailWithError error: Error
+        ) {
+            parent.dismiss()
+        }
+
+        func documentCameraViewController(
+            _ controller: VNDocumentCameraViewController,
+            didFinishWith scan: VNDocumentCameraScan
+        ) {
+            guard scan.pageCount > 0 else {
+                parent.dismiss()
+                return
+            }
+            parent.image = scan.imageOfPage(at: 0)
+            parent.dismiss()
         }
     }
 }

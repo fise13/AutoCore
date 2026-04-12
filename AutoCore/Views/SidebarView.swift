@@ -14,11 +14,16 @@ struct SidebarView: View {
     let onClearFilters: () -> Void
     let onCreateCategory: () -> Void
     let onRenameBrand: (Int64, String) -> Void
+    let onRenameCategory: (Int64, String) -> Void
+    let onDeleteCategory: (Int64) -> Void
 
     @State private var expandedBrands: Set<Int64> = []
     @State private var hoveredItem: String? = nil
     @State private var brandToRename: Brand?
     @State private var renameBrandText = ""
+    @State private var categoryToRename: DatabaseService.SpecificCategory?
+    @State private var renameCategoryText = ""
+    @State private var categoryToDelete: DatabaseService.SpecificCategory?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -137,6 +142,19 @@ struct SidebarView: View {
                                         }
                                     }
                                 )
+                                .contextMenu {
+                                    Button {
+                                        categoryToRename = category
+                                        renameCategoryText = category.name
+                                    } label: {
+                                        Label("Переименовать", systemImage: "pencil")
+                                    }
+                                    Button(role: .destructive) {
+                                        categoryToDelete = category
+                                    } label: {
+                                        Label("Удалить", systemImage: "trash")
+                                    }
+                                }
                             }
                         }
                     }
@@ -283,6 +301,42 @@ struct SidebarView: View {
             }
         } message: {
             Text("Двойной клик по бренду открывает это окно редактирования.")
+        }
+        .alert("Изменить категорию", isPresented: Binding(
+            get: { categoryToRename != nil },
+            set: { if !$0 { categoryToRename = nil } }
+        )) {
+            TextField("Новое имя категории", text: $renameCategoryText)
+            Button("Отмена", role: .cancel) {
+                categoryToRename = nil
+            }
+            Button("Сохранить") {
+                guard let category = categoryToRename else { return }
+                let trimmed = renameCategoryText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed != category.name else {
+                    categoryToRename = nil
+                    return
+                }
+                onRenameCategory(category.id, trimmed)
+                categoryToRename = nil
+            }
+        } message: {
+            Text("Категорию можно изменить через контекстное меню (правая кнопка мыши).")
+        }
+        .alert("Удалить категорию?", isPresented: Binding(
+            get: { categoryToDelete != nil },
+            set: { if !$0 { categoryToDelete = nil } }
+        )) {
+            Button("Отмена", role: .cancel) {
+                categoryToDelete = nil
+            }
+            Button("Удалить", role: .destructive) {
+                guard let category = categoryToDelete else { return }
+                onDeleteCategory(category.id)
+                categoryToDelete = nil
+            }
+        } message: {
+            Text("Будут удалены категория и её специфичные записи.")
         }
     }
 }

@@ -318,7 +318,9 @@ final class IOSAccountingViewModel: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "Вы не авторизованы. Войдите в аккаунт заново."]
             )
         }
-        _ = try await user.getIDTokenResult(forcingRefresh: true)
+        // Избегаем частых network timeout к securetoken: сначала используем текущий токен,
+        // принудительное обновление делаем только при необходимости.
+        _ = try await user.getIDTokenResult(forcingRefresh: false)
 
         let trimmedCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCompanyId.isEmpty else {
@@ -331,7 +333,13 @@ final class IOSAccountingViewModel: ObservableObject {
 
         let db = Firestore.firestore()
         let userRef = db.collection("users").document(user.uid)
-        let userSnapshot = try await userRef.getDocument(source: .server)
+        let userSnapshot: DocumentSnapshot
+        do {
+            userSnapshot = try await userRef.getDocument(source: .server)
+        } catch {
+            // Fallback: офлайн/таймаут не должен блокировать операцию, если токен уже валиден.
+            userSnapshot = try await userRef.getDocument(source: .default)
+        }
         let currentDocCompanyId = (userSnapshot.data()?["companyId"] as? String) ?? ""
         if currentDocCompanyId != trimmedCompanyId {
             try await userRef.setData(["companyId": trimmedCompanyId], merge: true)

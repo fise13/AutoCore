@@ -25,6 +25,8 @@ struct RootView: View {
     @State private var isShowingUpdateNotification = false
     @State private var isShowingUpdateSuccess = false
     @State private var isShowingSettings = false
+    @State private var saleBannerMessage: String?
+    @State private var saleBannerVisible = false
     @StateObject private var updateService = UpdateService.shared
     
     // Окно для показа панелей (получается через WindowAccessor)
@@ -48,6 +50,21 @@ struct RootView: View {
             
         splitView
         }
+            .overlay(alignment: .top) {
+                if saleBannerVisible, let saleBannerMessage {
+                    Text(saleBannerMessage)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.green.opacity(0.92))
+                        )
+                        .padding(.top, 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             .navigationTitle("AutoCore")
             .toolbar {
                 Group {
@@ -237,6 +254,19 @@ struct RootView: View {
                     isShowingUpdateSuccess = true
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .motorSaleBannerRequested)) { notification in
+                guard let message = notification.userInfo?[MotorSaleBannerUserInfoKey.message] as? String,
+                      !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                saleBannerMessage = message
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    saleBannerVisible = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        saleBannerVisible = false
+                    }
+                }
+            }
     }
     
     @ViewBuilder
@@ -328,6 +358,12 @@ struct RootView: View {
                 },
                 onRenameBrand: { brandID, newName in
                     appViewModel.renameBrand(brandID: brandID, newName: newName)
+                },
+                onRenameCategory: { categoryID, newName in
+                    appViewModel.renameSpecificCategory(categoryID: categoryID, newName: newName)
+                },
+                onDeleteCategory: { categoryID in
+                    appViewModel.deleteSpecificCategory(categoryID: categoryID)
                 }
             )
         } detail: {
@@ -400,6 +436,9 @@ struct RootView: View {
                         categoryName: category.name,
                         onCellSave: { recordID, fieldKey, value in
                             appViewModel.updateSpecificRecordCell(recordID: recordID, fieldKey: fieldKey, value: value)
+                        },
+                        onDeleteRecord: { recordID in
+                            appViewModel.deleteSpecificRecord(recordID: recordID)
                         }
                     )
                 } else {

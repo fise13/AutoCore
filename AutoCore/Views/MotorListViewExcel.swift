@@ -618,6 +618,11 @@ import SwiftUI
 import Combine
 
 struct MotorListViewExcel: View {
+#if os(macOS)
+    /// AppKit Excel-like grid (virtualized); set `false` to use legacy SwiftUI `LazyVGrid`.
+    private static let useAppKitGridCore = true
+#endif
+
     let motors: [MotorRowDTO]
     let isLoading: Bool
     let totalCount: Int
@@ -633,6 +638,9 @@ struct MotorListViewExcel: View {
     @FocusState private var focusedCell: GridFocusID?
     @State private var tableZoom: CGFloat = 1.0
     @State private var saveStatusText: String = "Все сохранено"
+#if os(macOS)
+    @State private var appKitHasUnsavedChanges = false
+#endif
 
     private var rowHeight: CGFloat { 38 * tableZoom }
     private var headerHeight: CGFloat { 34 * tableZoom }
@@ -685,6 +693,105 @@ struct MotorListViewExcel: View {
     }
 
     var body: some View {
+        Group {
+#if os(macOS)
+            if Self.useAppKitGridCore {
+                appKitGridContent
+            } else {
+                legacyGridContent
+            }
+#else
+            legacyGridContent
+#endif
+        }
+    }
+
+#if os(macOS)
+    @ViewBuilder
+    private var appKitGridContent: some View {
+        VStack(spacing: 0) {
+            if isLoading {
+                ProgressView().padding(.vertical, 8)
+            }
+            ZStack(alignment: .bottomTrailing) {
+                ExcelGridMotorSheetRepresentable(
+                    motors: motors,
+                    zoom: tableZoom,
+                    onToggleSold: onToggleSold,
+                    onUnsavedChange: { appKitHasUnsavedChanges = $0 },
+                    onZoomChange: { tableZoom = $0 },
+                    onSaveMotorRow: onSaveMotorRow,
+                    onCreateMotor: { draft in onCreateMotor?(draft) },
+                    onSaveFinished: { didSave in
+                        saveStatusText = didSave ? "Сохранено" : (appKitHasUnsavedChanges ? "Не сохранено" : "Все сохранено")
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                appKitZoomControl
+            }
+            .background(Platform.textBackgroundColor)
+
+            HStack {
+                Text("Показано \(motors.count) из \(totalCount)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("• \(saveStatusText)")
+                    .font(.caption)
+                    .foregroundStyle(appKitHasUnsavedChanges ? .orange : .secondary)
+                Button("Сохранить (Cmd+S)") {
+                    NotificationCenter.default.post(name: .motorGridSaveRequested, object: nil)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .disabled(!appKitHasUnsavedChanges)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Platform.windowBackgroundColor)
+        }
+        .onChange(of: appKitHasUnsavedChanges) { _, newValue in
+            NotificationCenter.default.post(name: .motorGridUnsavedChangesChanged, object: newValue)
+            if !newValue {
+                saveStatusText = "Все сохранено"
+            } else {
+                saveStatusText = "Не сохранено"
+            }
+        }
+    }
+
+    private var appKitZoomControl: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { tableZoom },
+                    set: { tableZoom = min(max($0, 0.75), 1.6) }
+                ),
+                in: 0.75...1.6,
+                step: 0.01
+            )
+            .frame(width: 110)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Platform.windowBackgroundColor.opacity(0.96))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Platform.separatorColor.opacity(0.4), lineWidth: 1)
+        )
+        .padding(.trailing, 12)
+        .padding(.bottom, 10)
+    }
+#endif
+
+    @ViewBuilder
+    private var legacyGridContent: some View {
         VStack(spacing: 0) {
             if isLoading {
                 ProgressView().padding(.vertical, 8)

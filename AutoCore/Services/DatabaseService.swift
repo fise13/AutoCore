@@ -607,6 +607,23 @@ nonisolated final class DatabaseService {
         }
         try updateSoldDate(id: id, soldDate: soldDate)
     }
+
+    func setSoldDateForSerialCode(serialCode: String, soldDate: Date?) throws {
+        try assertNotReadOnly()
+        let normalized = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        try inTransaction {
+            let updatedAt = dateFormatter.string(from: Date())
+            try executeUnlocked(
+                sql: "UPDATE motors SET sold_date = ?, updated_at = ? WHERE serial_code = ?;",
+                bindings: [
+                    .textOptional(soldDate.map { dateFormatter.string(from: $0) }),
+                    .text(updatedAt),
+                    .text(normalized)
+                ]
+            )
+        }
+    }
     
     func deleteMotor(id: Int64) throws {
         try assertNotReadOnly()
@@ -838,6 +855,40 @@ nonisolated final class DatabaseService {
                     .int64(categoryID),
                     .int64(id)
                 ]
+            )
+        }
+    }
+
+    func deleteSpecificRecord(id: Int64) throws {
+        try assertNotReadOnly()
+        try inTransaction {
+            try executeUnlocked(
+                sql: "DELETE FROM specific_records WHERE id = ?;",
+                bindings: [.int64(id)]
+            )
+        }
+    }
+
+    func updateSpecificCategoryName(id: Int64, name: String) throws {
+        try assertNotReadOnly()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw DatabaseError.invalidInput(message: "Пустое имя категории.")
+        }
+        try inTransaction {
+            try executeUnlocked(
+                sql: "UPDATE specific_categories SET name = ? WHERE id = ?;",
+                bindings: [.text(trimmed), .int64(id)]
+            )
+        }
+    }
+
+    func deleteSpecificCategory(id: Int64) throws {
+        try assertNotReadOnly()
+        try inTransaction {
+            try executeUnlocked(
+                sql: "DELETE FROM specific_categories WHERE id = ?;",
+                bindings: [.int64(id)]
             )
         }
     }

@@ -46,6 +46,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .motorGridUnsavedChangesChanged,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRemoteMotorSoldStatusChanged(_:)),
+            name: .remoteMotorSoldStatusChanged,
+            object: nil
+        )
     }
 
     @objc private func dismissTesterPanel() {
@@ -62,10 +68,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    @objc private func handleRemoteMotorSoldStatusChanged(_ notification: Notification) {
+        MotorSaleNotificationService.shared.handleRemoteMotorEvent(notification)
+    }
     
     func applicationWillTerminate(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: NSNotification.Name("AutoCoreTesterPanelDismiss"), object: nil)
         NotificationCenter.default.removeObserver(self, name: .motorGridUnsavedChangesChanged, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .remoteMotorSoldStatusChanged, object: nil)
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

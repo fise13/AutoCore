@@ -129,8 +129,39 @@ final class AppViewModel: ObservableObject {
     private static let cellEditDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter
     }()
+    private static let tableDisplayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yyyy"
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter
+    }()
+    private static let slashDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd/MM/yyyy"
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter
+    }()
+    
+    private nonisolated static func parseInlineTableDate(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let f1 = DateFormatter()
+        f1.dateFormat = "yyyy-MM-dd"
+        f1.locale = Locale(identifier: "en_US_POSIX")
+        if let d = f1.date(from: trimmed) { return d }
+        let f2 = DateFormatter()
+        f2.dateFormat = "dd.MM.yyyy"
+        f2.locale = Locale(identifier: "ru_RU")
+        if let d = f2.date(from: trimmed) { return d }
+        let f3 = DateFormatter()
+        f3.dateFormat = "dd/MM/yyyy"
+        f3.locale = Locale(identifier: "ru_RU")
+        if let d = f3.date(from: trimmed) { return d }
+        return nil
+    }
     
     private func formatDate(_ date: Date?) -> String {
         guard let date else { return "" }
@@ -150,6 +181,7 @@ final class AppViewModel: ObservableObject {
         self.motorRepository = MotorRepositoryImpl(database: database, companyId: "default")
         undoManager.groupsByEvent = true
         observeFilters()
+        observeRemoteMotorSyncEvents()
         refreshAll()
     }
 
@@ -300,6 +332,7 @@ final class AppViewModel: ObservableObject {
 
             if companyId != "default" && !companyId.isEmpty {
                 try? await self.firestoreFinancialSync.pullAndMergeFinancialOperations(companyId: companyId, database: database)
+                await self.firestoreCatalogSync.syncMotorSoldStatusesToLocal(companyId: companyId, database: database)
             }
 
             do {
@@ -728,6 +761,37 @@ final class AppViewModel: ObservableObject {
         // Поиск в specific_records для отображения в основном списке
         // Поиск в специфичных записях теперь происходит через filteredMotors
         // Не нужно отдельно загружать результаты поиска
+    }
+
+    private func observeRemoteMotorSyncEvents() {
+        NotificationCenter.default.publisher(for: .remoteMotorSoldStatusChanged)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let self else { return }
+                if let eventCompany = notification.userInfo?[RemoteMotorSyncUserInfoKey.companyId] as? String,
+                   !eventCompany.isEmpty,
+                   eventCompany != self.companyId {
+                    return
+                }
+
+                // Легковесно обновляем моторы после удаленной продажи/возврата.
+                self.refreshMotors()
+                if self.selectedSection == .sold || self.availabilityFilter == .sold {
+                    self.refreshSoldMotors()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .financialSyncMerged)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refreshMotors()
+                if self.selectedSection == .sold || self.availabilityFilter == .sold {
+                    self.refreshSoldMotors()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Intent Methods (для изменения состояния из Views)
@@ -1419,6 +1483,70 @@ final class AppViewModel: ObservableObject {
             }
         }
     }
+
+    func deleteSpecificRecord(recordID: Int64) {
+        let database = self.database
+        let selectedSection = self.selectedSection
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try database.deleteSpecificRecord(id: recordID)
+                await MainActor.run {
+                    if case .specificCategory(let categoryID) = selectedSection {
+                        self.refreshServiceRecords(categoryID: categoryID)
+                    } else {
+                        self.refreshAll()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка удаления записи: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func renameSpecificCategory(categoryID: Int64, newName: String) {
+        let database = self.database
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try database.updateSpecificCategoryName(id: categoryID, name: trimmed)
+                await MainActor.run {
+                    self.refreshAll()
+                    if case .specificCategory(let currentID) = self.selectedSection, currentID == categoryID {
+                        self.refreshServiceRecords(categoryID: categoryID)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка переименования категории: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func deleteSpecificCategory(categoryID: Int64) {
+        let database = self.database
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try database.deleteSpecificCategory(id: categoryID)
+                await MainActor.run {
+                    if case .specificCategory(let currentID) = self.selectedSection, currentID == categoryID {
+                        self.selectedSection = .all
+                    }
+                    self.refreshAll()
+                }
+            } catch {
+                await MainActor.run {
+                    self.setError("Ошибка удаления категории: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
     
     func updateMotorCell(motorID: Int64, field: EditableCellState.EditableField, value: String) {
         let database = self.database
@@ -1514,7 +1642,7 @@ final class AppViewModel: ObservableObject {
                     newTransmission = value
                 case .arrivalDate:
                     if trimmedInput.isEmpty { return }
-                    if let date = Self.cellEditDateFormatter.date(from: value) {
+                    if let date = Self.parseInlineTableDate(value) {
                         newArrivalDate = date
                     } else {
                         return // Невалидная дата
@@ -1522,7 +1650,7 @@ final class AppViewModel: ObservableObject {
                 case .soldDate:
                     if trimmedInput.isEmpty {
                         newSoldDate = nil
-                    } else if let date = Self.cellEditDateFormatter.date(from: value) {
+                    } else if let date = Self.parseInlineTableDate(value) {
                         newSoldDate = date
                     } else {
                         return // Невалидная дата
@@ -1605,8 +1733,8 @@ final class AppViewModel: ObservableObject {
         }()
 
         let qty = max(1, Int(draft.quantity.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1)
-        let arrival = Self.cellEditDateFormatter.date(from: draft.arrivalDate.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Date()
-        let sold = Self.cellEditDateFormatter.date(from: draft.soldDate.trimmingCharacters(in: .whitespacesAndNewlines))
+        let arrival = Self.parseInlineTableDate(draft.arrivalDate) ?? Date()
+        let sold = Self.parseInlineTableDate(draft.soldDate)
 
         addManualMotor(
             brandName: brandName,
@@ -1667,7 +1795,7 @@ final class AppViewModel: ObservableObject {
                     return
                 }
 
-                guard let arrivalDate = Self.cellEditDateFormatter.date(from: arrivalDateText) else {
+                guard let arrivalDate = Self.parseInlineTableDate(arrivalDateText) else {
                     await MainActor.run {
                         self.setError("Некорректная дата прихода")
                     }
@@ -1677,7 +1805,7 @@ final class AppViewModel: ObservableObject {
                 let soldDate: Date?
                 if soldDateText.isEmpty {
                     soldDate = nil
-                } else if let parsed = Self.cellEditDateFormatter.date(from: soldDateText) {
+                } else if let parsed = Self.parseInlineTableDate(soldDateText) {
                     soldDate = parsed
                 } else {
                     await MainActor.run {

@@ -199,10 +199,13 @@ struct AccountingView: View {
         .task(id: syncCompanyId) {
             guard let db = database, let cid = syncCompanyId, !cid.isEmpty else { return }
             let sync = FirestoreFinancialSyncService()
+            let catalogSync = FirestoreCatalogSyncService()
             do {
                 try await sync.pullAndMergeFinancialOperations(companyId: cid, database: db)
+                await catalogSync.syncMotorSoldStatusesToLocal(companyId: cid, database: db)
                 try await sync.pushLocalOperationsToFirestore(companyId: cid, database: db)
                 await MainActor.run { viewModel.refreshAll() }
+                NotificationCenter.default.post(name: .financialSyncMerged, object: nil)
             } catch {
                 // начальная синхронизация не блокирует показ данных
             }
@@ -210,7 +213,9 @@ struct AccountingView: View {
                 guard !Task.isCancelled else { break }
                 do {
                     try await sync.mergeEntitiesIntoDatabase(entities, companyId: cid, database: db)
+                    await catalogSync.syncMotorSoldStatusesToLocal(companyId: cid, database: db)
                     await MainActor.run { viewModel.refreshAll() }
+                    NotificationCenter.default.post(name: .financialSyncMerged, object: nil)
                 } catch {
                     // observe merge не блокирует
                 }

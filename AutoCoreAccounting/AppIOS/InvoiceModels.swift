@@ -46,11 +46,16 @@ enum InvoiceDocumentKind: String, CaseIterable, Identifiable, Codable {
 
 /// Строка накладной: название, количество, цена.
 struct InvoiceItem: Identifiable, Equatable {
-    var id: String { "\(name)-\(quantity)-\(price)-\(motorSerial ?? "")" }
+    var id: String {
+        "\(name)-\(quantity)-\(price)-\(motorSerial ?? "")-\(selectedMotorLocalId ?? -1)-\(selectedMotorCloudId ?? "")"
+    }
     var name: String
     var quantity: Decimal
     var price: Decimal
     var motorSerial: String? = nil
+    var selectedMotorLocalId: Int64? = nil
+    var selectedMotorCloudId: String? = nil
+    var selectedMotorSerial: String? = nil
     
     var total: Decimal { quantity * price }
 }

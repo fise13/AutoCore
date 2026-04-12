@@ -36,7 +36,7 @@ final class InvoiceScanConfirmService {
         let total = invoice.totalAmount
         if total <= 0 { return }
         
-        let opType: FinancialOperationEntity.OperationType = invoice.type == .income ? .income : .expense
+        let baseType: FinancialOperationEntity.OperationType = invoice.type == .income ? .income : .expense
         let opSource = invoice.documentKind == .workOrder ? "Заказ-наряд (AI скан)" : "Накладная (AI скан)"
         let opCategory = invoice.documentKind == .workOrder ? "Заказ-наряд" : "Накладная"
         let opDescription = {
@@ -48,9 +48,10 @@ final class InvoiceScanConfirmService {
 
         // При продажной накладной пытаемся сопоставить моторы по введённым серийникам
         var matchedMotorIDs: [Int64] = []
-        if invoice.documentKind == .invoice && invoice.type == .income {
+        if invoice.type == .income {
             matchedMotorIDs = try await markMatchedMotorsAsSold(companyId: companyId, invoice: invoice)
         }
+        let opType: FinancialOperationEntity.OperationType = (invoice.type == .income && !matchedMotorIDs.isEmpty) ? .sale : baseType
 
         // 1. Финансовая операция (приход/расход по результату AI)
         let expense = FinancialOperationEntity(
@@ -160,36 +161,92 @@ final class InvoiceScanConfirmService {
     }
 
     private func markMatchedMotorsAsSold(companyId: String, invoice: ScannedInvoice) async throws -> [Int64] {
-        let serials = invoice.items
-            .compactMap { $0.motorSerial?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !serials.isEmpty else { return [] }
-
-        var matched: [Int64] = []
+        var matchedIDs = Set<Int64>()
+        var processedCloudDocumentIDs = Set<String>()
+        var fallbackSerials = Set<String>()
+        var alreadySoldSerials = Set<String>()
         let batch = db.batch()
 
-        for serial in Set(serials) {
+        // 1) Приоритет явного выбора мотора из UI (selectedMotorCloudId/localId).
+        for item in invoice.items {
+            if let selectedCloudId = item.selectedMotorCloudId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !selectedCloudId.isEmpty {
+                let ref = db.collection("motors").document(selectedCloudId)
+                let snapshot = try await ref.getDocument()
+                guard snapshot.exists, let data = snapshot.data() else { continue }
+                guard (data["companyId"] as? String) == companyId else { continue }
+                if (data["soldDate"] as? Timestamp) != nil {
+                    let serialFromDoc = (data["serialCode"] as? String) ?? item.selectedMotorSerial ?? item.motorSerial ?? "неизвестно"
+                    alreadySoldSerials.insert(serialFromDoc)
+                    continue
+                }
+
+                if let localId = item.selectedMotorLocalId ?? localMotorID(from: data) {
+                    matchedIDs.insert(localId)
+                }
+                batch.updateData([
+                    "soldDate": Timestamp(date: invoice.scannedAt),
+                    "updatedAt": FieldValue.serverTimestamp()
+                ], forDocument: ref)
+                processedCloudDocumentIDs.insert(selectedCloudId)
+                continue
+            }
+
+            let fallbackSerial = item.motorSerial?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !fallbackSerial.isEmpty {
+                fallbackSerials.insert(fallbackSerial)
+            }
+        }
+
+        // 2) Фолбэк для старых сценариев: сопоставление по введённому serial.
+        for serial in fallbackSerials {
             let query = db.collection("motors")
                 .whereField("companyId", isEqualTo: companyId)
                 .whereField("serialCode", isEqualTo: serial)
                 .limit(to: 1)
             let snapshot = try await query.getDocuments()
             guard let doc = snapshot.documents.first else { continue }
-            if let localIdNumber = doc.data()["localId"] as? NSNumber {
-                matched.append(localIdNumber.int64Value)
-            } else if let localIdInt64 = doc.data()["localId"] as? Int64 {
-                matched.append(localIdInt64)
+            guard !processedCloudDocumentIDs.contains(doc.documentID) else { continue }
+            if (doc.data()["soldDate"] as? Timestamp) != nil {
+                alreadySoldSerials.insert(serial)
+                continue
+            }
+            if let localId = localMotorID(from: doc.data()) {
+                matchedIDs.insert(localId)
             }
             batch.updateData([
                 "soldDate": Timestamp(date: invoice.scannedAt),
                 "updatedAt": FieldValue.serverTimestamp()
             ], forDocument: doc.reference)
+            processedCloudDocumentIDs.insert(doc.documentID)
         }
 
-        if !matched.isEmpty {
+        if !alreadySoldSerials.isEmpty {
+            let list = alreadySoldSerials.sorted().joined(separator: ", ")
+            throw NSError(
+                domain: "InvoiceScanConfirm",
+                code: -11,
+                userInfo: [NSLocalizedDescriptionKey: "Нельзя продать уже проданный мотор: \(list). Выберите доступный мотор."]
+            )
+        }
+
+        if !processedCloudDocumentIDs.isEmpty {
             try await batch.commit()
         }
-        return matched
+        return matchedIDs.sorted()
+    }
+
+    private func localMotorID(from data: [String: Any]) -> Int64? {
+        if let localIdNumber = data["localId"] as? NSNumber {
+            return localIdNumber.int64Value
+        }
+        if let localIdInt64 = data["localId"] as? Int64 {
+            return localIdInt64
+        }
+        if let localIdInt = data["localId"] as? Int {
+            return Int64(localIdInt)
+        }
+        return nil
     }
 }
 

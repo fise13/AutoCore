@@ -13,5 +13,9 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна, чтобы фотографировать накладные и сканировать документы для автоматического распознавания.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ к фото нужен, чтобы выбрать изображение накладной из галереи.</string>
 </dict>
 </plist>

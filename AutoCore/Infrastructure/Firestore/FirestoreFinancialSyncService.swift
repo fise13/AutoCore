@@ -176,9 +176,33 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
     
     /// Сливает список операций из Firestore в локальную БД (без дубликатов). Используется при pull и при observe.
     func mergeEntitiesIntoDatabase(_ entities: [FinancialOperationEntity], companyId: String, database: DatabaseService) async throws {
+        var localFilter = DatabaseService.FinancialOperationFilter()
+        localFilter.companyId = companyId
+        localFilter.limit = 5000
+        let localOperations = try database.fetchFinancialOperations(filter: localFilter)
+        var localByCloudId: [String: DatabaseService.FinancialOperation] = [:]
+        for operation in localOperations {
+            if let cloudId = operation.cloudDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines), !cloudId.isEmpty {
+                localByCloudId[cloudId] = operation
+            }
+        }
+
+        var remoteCloudIds = Set<String>()
         var insertedCount = 0
+        var updatedCount = 0
         for entity in entities {
             do {
+                if let cloudId = entity.cloudDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines), !cloudId.isEmpty {
+                    remoteCloudIds.insert(cloudId)
+                    if let local = localByCloudId[cloudId] {
+                        if try updateLocalOperationIfNeeded(local: local, remote: entity, database: database) {
+                            updatedCount += 1
+                        }
+                        try applyMotorSoldStatusIfNeeded(entity: entity, companyId: companyId, database: database)
+                        continue
+                    }
+                }
+
                 var filter = DatabaseService.FinancialOperationFilter()
                 filter.companyId = companyId
                 filter.type = entity.type
@@ -220,14 +244,34 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                     cloudRecordId: entity.cloudDocumentId,
                     companyId: companyId
                 )
+                try applyMotorSoldStatusIfNeeded(entity: entity, companyId: companyId, database: database)
                 insertedCount += 1
             } catch {
                 logger.error("Firestore PULL: failed to merge operation type=\(entity.type.rawValue), amount=\(entity.amount)", error: error)
                 continue
             }
         }
+
+        let staleOperations = localOperations.filter { operation in
+            guard let cloudId = operation.cloudDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines), !cloudId.isEmpty else {
+                return false
+            }
+            return !remoteCloudIds.contains(cloudId)
+        }
+        var deletedCount = 0
+        for operation in staleOperations {
+            do {
+                try database.deleteFinancialOperation(id: operation.id)
+                deletedCount += 1
+                if let motorID = operation.relatedMotorID {
+                    try reconcileMotorSoldDateFromFinancialHistory(motorID: motorID, companyId: companyId, database: database)
+                }
+            } catch {
+                logger.error("Firestore MERGE: failed to delete stale local operation id=\(operation.id)", error: error)
+            }
+        }
         
-        logger.info("Firestore MERGE into local DB: inserted=\(insertedCount)")
+        logger.info("Firestore MERGE into local DB: inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)")
     }
     
     func pullAndMergeFinancialOperations(companyId: String, database: DatabaseService) async throws {
@@ -363,5 +407,99 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
             category: category,
             description: description
         )
+    }
+
+    private func updateLocalOperationIfNeeded(
+        local: DatabaseService.FinancialOperation,
+        remote: FinancialOperationEntity,
+        database: DatabaseService
+    ) throws -> Bool {
+        let needsUpdate =
+            local.amount != remote.amount ||
+            local.account != remote.account.rawValue ||
+            (local.category ?? "") != (remote.category ?? "") ||
+            local.description != remote.description ||
+            local.comment != remote.comment
+
+        guard needsUpdate else { return false }
+
+        try database.updateFinancialOperation(
+            id: local.id,
+            amount: remote.amount,
+            account: remote.account.rawValue,
+            category: remote.category,
+            description: remote.description,
+            comment: remote.comment
+        )
+        return true
+    }
+
+    private func reconcileMotorSoldDateFromFinancialHistory(
+        motorID: Int64,
+        companyId: String,
+        database: DatabaseService
+    ) throws {
+        var filter = DatabaseService.FinancialOperationFilter()
+        filter.companyId = companyId
+        filter.relatedMotorID = motorID
+        filter.limit = 500
+        let ops = try database.fetchFinancialOperations(filter: filter)
+        let relevant = ops
+            .filter { $0.type == FinancialOperationEntity.OperationType.sale.rawValue || $0.type == FinancialOperationEntity.OperationType.refund.rawValue }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        guard let latest = relevant.last else {
+            try database.updateSoldDate(id: motorID, soldDate: nil)
+            return
+        }
+        if latest.type == FinancialOperationEntity.OperationType.sale.rawValue {
+            try database.updateSoldDate(id: motorID, soldDate: latest.createdAt)
+        } else {
+            try database.updateSoldDate(id: motorID, soldDate: nil)
+        }
+    }
+
+    private func applyMotorSoldStatusIfNeeded(
+        entity: FinancialOperationEntity,
+        companyId: String,
+        database: DatabaseService
+    ) throws {
+        guard let motorID = entity.relatedMotorID else { return }
+        // В кросс-устройственном сценарии relatedMotorID может быть локальным id другого устройства.
+        // Применяем sold-status по ID только для "локальных" операций продажи мотора macOS.
+        let isLocalMotorSaleSource = entity.source.localizedCaseInsensitiveContains("Продажа мотора")
+            || entity.source.localizedCaseInsensitiveContains("Возврат мотора")
+        guard isLocalMotorSaleSource else { return }
+        switch entity.type {
+        case .sale:
+            try database.updateSoldDate(id: motorID, soldDate: entity.createdAt)
+            NotificationCenter.default.post(
+                name: .remoteMotorSoldStatusChanged,
+                object: nil,
+                userInfo: [
+                    RemoteMotorSyncUserInfoKey.motorID: motorID,
+                    RemoteMotorSyncUserInfoKey.soldDate: entity.createdAt,
+                    RemoteMotorSyncUserInfoKey.companyId: companyId,
+                    RemoteMotorSyncUserInfoKey.operationDocumentId: entity.cloudDocumentId ?? "",
+                    RemoteMotorSyncUserInfoKey.operationType: entity.type.rawValue,
+                    RemoteMotorSyncUserInfoKey.createdByUser: entity.createdByUser
+                ]
+            )
+        case .refund:
+            try database.updateSoldDate(id: motorID, soldDate: nil)
+            NotificationCenter.default.post(
+                name: .remoteMotorSoldStatusChanged,
+                object: nil,
+                userInfo: [
+                    RemoteMotorSyncUserInfoKey.motorID: motorID,
+                    RemoteMotorSyncUserInfoKey.companyId: companyId,
+                    RemoteMotorSyncUserInfoKey.operationDocumentId: entity.cloudDocumentId ?? "",
+                    RemoteMotorSyncUserInfoKey.operationType: entity.type.rawValue,
+                    RemoteMotorSyncUserInfoKey.createdByUser: entity.createdByUser
+                ]
+            )
+        default:
+            break
+        }
     }
 }
