@@ -9,6 +9,7 @@ final class EditorOverlayController: NSObject, NSTextFieldDelegate {
     var onCommit: ((GridCellAddress, String) -> Void)?
     var onCancel: (() -> Void)?
     var onNavigate: ((Bool) -> Void)?
+    var isEditing: Bool { address != nil && !field.isHidden }
 
     override init() {
         field = NSTextField(string: "")
@@ -30,13 +31,19 @@ final class EditorOverlayController: NSObject, NSTextFieldDelegate {
         field.isHidden = true
     }
 
-    func beginEdit(address: GridCellAddress, frame: CGRect, text: String) {
+    func beginEdit(address: GridCellAddress, frame: CGRect, text: String, selectAll: Bool = true) {
         self.address = address
         field.frame = frame.insetBy(dx: 1, dy: 1)
         field.stringValue = text
         field.isHidden = false
         hostView?.window?.makeFirstResponder(field)
-        field.currentEditor()?.selectAll(nil)
+        if selectAll {
+            field.currentEditor()?.selectAll(nil)
+        } else {
+            if let editor = field.currentEditor() {
+                editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
+            }
+        }
     }
 
     func endEditing(commit: Bool) {

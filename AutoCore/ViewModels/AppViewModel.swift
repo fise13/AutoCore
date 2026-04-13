@@ -148,18 +148,43 @@ final class AppViewModel: ObservableObject {
     private nonisolated static func parseInlineTableDate(_ text: String) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let f1 = DateFormatter()
-        f1.dateFormat = "yyyy-MM-dd"
-        f1.locale = Locale(identifier: "en_US_POSIX")
-        if let d = f1.date(from: trimmed) { return d }
-        let f2 = DateFormatter()
-        f2.dateFormat = "dd.MM.yyyy"
-        f2.locale = Locale(identifier: "ru_RU")
-        if let d = f2.date(from: trimmed) { return d }
-        let f3 = DateFormatter()
-        f3.dateFormat = "dd/MM/yyyy"
-        f3.locale = Locale(identifier: "ru_RU")
-        if let d = f3.date(from: trimmed) { return d }
+        let calendar = Calendar(identifier: .gregorian)
+        let normalized = trimmed.replacingOccurrences(of: "г.", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let formats: [(String, String)] = [
+            ("yyyy-MM-dd", "en_US_POSIX"),
+            ("dd.MM.yyyy", "ru_RU"),
+            ("d.M.yyyy", "ru_RU"),
+            ("dd.MM.yy", "ru_RU"),
+            ("d.M.yy", "ru_RU"),
+            ("dd/MM/yyyy", "ru_RU"),
+            ("d/M/yyyy", "ru_RU"),
+            ("dd/MM/yy", "ru_RU"),
+            ("d/M/yy", "ru_RU")
+        ]
+        for (format, localeID) in formats {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.locale = Locale(identifier: localeID)
+            formatter.dateFormat = format
+            formatter.isLenient = false
+            if let date = formatter.date(from: normalized) {
+                return date
+            }
+        }
+
+        let localeFallbacks = ["ru_RU", "kk_KZ", "en_US", "en_GB"]
+        for localeID in localeFallbacks {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.locale = Locale(identifier: localeID)
+            formatter.dateStyle = .short
+            formatter.timeStyle = .none
+            formatter.isLenient = true
+            if let date = formatter.date(from: normalized) {
+                return date
+            }
+        }
         return nil
     }
     
@@ -174,6 +199,8 @@ final class AppViewModel: ObservableObject {
     private let firestoreCatalogSync = FirestoreCatalogSyncService()
     private let firestoreFinancialSync = FirestoreFinancialSyncService()
     private var engineToBrandID: [Int64: Int64] = [:]
+    private var isRecomputeScheduled = false
+    private var isApplyingCombinedBrandEngineSelection = false
     
     init(database: DatabaseService, recoveryState: RecoveryState? = nil) {
         self.database = database
@@ -266,6 +293,16 @@ final class AppViewModel: ObservableObject {
 
         cachedFilteredMotors = result
         cachedFilteredMotorDTOs = convertToDTOs(motors: result)
+    }
+
+    private func scheduleRecomputeFilteredCaches() {
+        guard !isRecomputeScheduled else { return }
+        isRecomputeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isRecomputeScheduled = false
+            self.recomputeFilteredCaches()
+        }
     }
 
     private nonisolated static func buildLatestSalePriceMap(_ operations: [DatabaseService.FinancialOperation], motorIDs: Set<Int64>) -> [Int64: Decimal] {
@@ -713,6 +750,9 @@ final class AppViewModel: ObservableObject {
             .dropFirst() // Пропускаем начальное значение
             .sink { [weak self] _ in
                 guard let self = self else { return }
+                if self.isApplyingCombinedBrandEngineSelection {
+                    return
+                }
                 // Сбрасываем selectedEngineID при изменении бренда на следующем цикле RunLoop,
                 // чтобы не публиковать изменения во время обновления вью.
                 DispatchQueue.main.async { [weak self] in
@@ -720,14 +760,18 @@ final class AppViewModel: ObservableObject {
                     if self.selectedEngineID != nil {
                         self.selectedEngineID = nil
                     }
-                    self.recomputeFilteredCaches()
+                    self.scheduleRecomputeFilteredCaches()
                 }
             }
             .store(in: &cancellables)
 
-        Publishers.CombineLatest3($searchText.removeDuplicates(), $availabilityFilter.removeDuplicates(), $selectedEngineID.removeDuplicates())
+        let searchPublisher = $searchText
+            .debounce(for: .milliseconds(180), scheduler: RunLoop.main)
+            .removeDuplicates()
+
+        Publishers.CombineLatest3(searchPublisher, $availabilityFilter.removeDuplicates(), $selectedEngineID.removeDuplicates())
             .sink { [weak self] _, _, _ in
-                self?.recomputeFilteredCaches()
+                self?.scheduleRecomputeFilteredCaches()
             }
             .store(in: &cancellables)
         
@@ -837,8 +881,11 @@ final class AppViewModel: ObservableObject {
     
     /// Установить выбранный бренд и двигатель одновременно
     func setSelectedBrandAndEngine(brandID: Int64?, engineID: Int64?) {
+        isApplyingCombinedBrandEngineSelection = true
         selectedBrandID = brandID
         selectedEngineID = engineID
+        isApplyingCombinedBrandEngineSelection = false
+        scheduleRecomputeFilteredCaches()
     }
     
     /// Сбросить все фильтры
@@ -1317,7 +1364,21 @@ final class AppViewModel: ObservableObject {
         if let soldIdx = soldMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
             soldMotors[soldIdx] = updatedMotor
         }
-        recomputeFilteredCaches()
+
+        let hasActiveFilters =
+            availabilityFilter != .all ||
+            selectedBrandID != nil ||
+            selectedEngineID != nil ||
+            !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if !hasActiveFilters,
+           let filteredIdx = cachedFilteredMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
+            cachedFilteredMotors[filteredIdx] = updatedMotor
+            cachedFilteredMotorDTOs[filteredIdx] = MotorRowDTO.from(motor: updatedMotor, dateFormatter: Self.displayDateFormatter)
+            return
+        }
+
+        scheduleRecomputeFilteredCaches()
     }
     
     @MainActor

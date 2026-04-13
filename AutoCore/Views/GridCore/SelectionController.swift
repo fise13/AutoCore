@@ -78,6 +78,13 @@ final class SelectionController {
             cmdRanges.removeAll()
         }
     }
+
+    func selectRange(_ range: GridRange, active: GridCellAddress? = nil) {
+        let resolvedActive = active ?? GridCellAddress(row: range.minRow, column: range.minColumn)
+        anchor = GridCellAddress(row: range.minRow, column: range.minColumn)
+        head = resolvedActive
+        cmdRanges.removeAll()
+    }
 }
 
 #endif

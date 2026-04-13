@@ -626,6 +626,7 @@ struct MotorListViewExcel: View {
     let motors: [MotorRowDTO]
     let isLoading: Bool
     let totalCount: Int
+    let userConfig: UserConfig?
     let onToggleSold: (Int64) -> Void
     let onLoadMore: () -> Void
     let onDuplicate: ((Int64) -> Void)?
@@ -645,7 +646,7 @@ struct MotorListViewExcel: View {
     private var rowHeight: CGFloat { 38 * tableZoom }
     private var headerHeight: CGFloat { 34 * tableZoom }
 
-    private var columns: [ColumnDef] {
+    private var baseColumns: [ColumnDef] {
         [
             .init(key: .rowNumber, title: "#", width: 40 * tableZoom, alignment: .center, editableField: nil),
             .init(key: .engineNumber, title: "Номер двигателя", width: 180 * tableZoom, alignment: .leading, editableField: .serialCode),
@@ -657,6 +658,39 @@ struct MotorListViewExcel: View {
             .init(key: .soldDate, title: "Дата продажи", width: 140 * tableZoom, alignment: .center, editableField: .soldDate),
             .init(key: .action, title: "", width: 110 * tableZoom, alignment: .center, editableField: nil)
         ]
+    }
+
+    private var columns: [ColumnDef] {
+        guard let userConfig else { return baseColumns }
+
+        var map = Dictionary(uniqueKeysWithValues: baseColumns.map { ($0.key, $0) })
+        var dynamic: [ColumnDef] = [map.removeValue(forKey: .rowNumber)!]
+
+        for item in userConfig.columns where item.isVisible {
+            guard let key = ColumnKey(userConfigID: item.id), var col = map[key] else { continue }
+            col = .init(
+                key: col.key,
+                title: item.title,
+                width: col.width,
+                alignment: col.alignment,
+                editableField: col.editableField
+            )
+            dynamic.append(col)
+            map.removeValue(forKey: key)
+        }
+
+        if userConfig.showSaleDate == false {
+            dynamic.removeAll(where: { $0.key == .soldDate })
+        }
+        if !dynamic.contains(where: { $0.key != .rowNumber && $0.key != .action }) {
+            if let engine = baseColumns.first(where: { $0.key == .engineNumber }) {
+                dynamic.append(engine)
+            }
+        }
+        if let action = baseColumns.first(where: { $0.key == .action }) {
+            dynamic.append(action)
+        }
+        return dynamic
     }
 
     private var gridItems: [GridItem] {
@@ -672,6 +706,7 @@ struct MotorListViewExcel: View {
         selectedMotorIDs: Set<Int64> = [],
         isLoading: Bool,
         totalCount: Int,
+        userConfig: UserConfig? = nil,
         onToggleSold: @escaping (Int64) -> Void,
         onLoadMore: @escaping () -> Void,
         onDuplicate: ((Int64) -> Void)?,
@@ -683,6 +718,7 @@ struct MotorListViewExcel: View {
         self.motors = motors
         self.isLoading = isLoading
         self.totalCount = totalCount
+        self.userConfig = userConfig
         self.onToggleSold = onToggleSold
         self.onLoadMore = onLoadMore
         self.onDuplicate = onDuplicate
@@ -716,6 +752,7 @@ struct MotorListViewExcel: View {
             ZStack(alignment: .bottomTrailing) {
                 ExcelGridMotorSheetRepresentable(
                     motors: motors,
+                    userConfig: userConfig,
                     zoom: tableZoom,
                     onToggleSold: onToggleSold,
                     onUnsavedChange: { appKitHasUnsavedChanges = $0 },
@@ -751,7 +788,6 @@ struct MotorListViewExcel: View {
             .background(Platform.windowBackgroundColor)
         }
         .onChange(of: appKitHasUnsavedChanges) { _, newValue in
-            NotificationCenter.default.post(name: .motorGridUnsavedChangesChanged, object: newValue)
             if !newValue {
                 saveStatusText = "Все сохранено"
             } else {
@@ -1229,6 +1265,19 @@ enum ColumnKey: String, CaseIterable, Hashable {
     case arrivalDate
     case soldDate
     case action
+
+    init?(userConfigID: String) {
+        switch userConfigID {
+        case "engineNumber": self = .engineNumber
+        case "configuration": self = .configuration
+        case "notes": self = .notes
+        case "quantity": self = .quantity
+        case "transmission": self = .transmission
+        case "arrivalDate": self = .arrivalDate
+        case "soldDate": self = .soldDate
+        default: return nil
+        }
+    }
 
     var editableField: EditableCellState.EditableField? {
         switch self {

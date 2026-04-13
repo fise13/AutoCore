@@ -89,6 +89,12 @@ struct SettingsView: View {
             switch selectedSection {
             case .general:
                 GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
+            case .interface:
+                #if os(macOS)
+                InterfaceSettingsView()
+                #else
+                Text("Настройка интерфейса доступна на macOS")
+                #endif
             case .features:
                 FeatureFlagsSettingsView(viewModel: viewModel)
             case .data:
@@ -113,6 +119,12 @@ struct SettingsView: View {
         switch section {
         case .general:
             GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
+        case .interface:
+            #if os(macOS)
+            InterfaceSettingsView()
+            #else
+            Text("Настройка интерфейса доступна на macOS")
+            #endif
         case .features:
             FeatureFlagsSettingsView(viewModel: viewModel)
         case .data:
@@ -216,6 +228,132 @@ private struct RecoveryModeInfoView: View {
     }
 }
 
+#if os(macOS)
+private struct InterfaceSettingsView: View {
+    @State private var sidebarConfig = SidebarCustomizationStore.shared.load()
+    @State private var userConfig = UserConfigStore.shared.load() ?? UserConfig.template(.warehouse)
+
+    private let dateFormats = ["dd.MM.yyyy", "MM/dd/yyyy"]
+
+    var body: some View {
+        ScrollView {
+            Form {
+                Section("Левое меню") {
+                    ForEach(sidebarConfig.orderedSections, id: \.self) { section in
+                        HStack {
+                            Toggle(section.title, isOn: Binding(
+                                get: { sidebarConfig.isVisible(section) },
+                                set: { isOn in
+                                    if isOn {
+                                        sidebarConfig.hiddenSections.remove(section)
+                                    } else {
+                                        sidebarConfig.hiddenSections.insert(section)
+                                    }
+                                    saveSidebar()
+                                }
+                            ))
+                            Spacer()
+                            Button {
+                                moveSection(section, delta: -1)
+                            } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .buttonStyle(.borderless)
+                            Button {
+                                moveSection(section, delta: 1)
+                            } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    Toggle("Показывать блок категорий", isOn: $sidebarConfig.showSpecificCategories)
+                        .onChange(of: sidebarConfig.showSpecificCategories) { _, _ in saveSidebar() }
+                    Toggle("Показывать блок брендов", isOn: $sidebarConfig.showBrandsBlock)
+                        .onChange(of: sidebarConfig.showBrandsBlock) { _, _ in saveSidebar() }
+                }
+
+                Section("Тип шаблона") {
+                    Picker("Тип", selection: $userConfig.businessType) {
+                        Text("Склад").tag(BusinessType.warehouse)
+                        Text("Перепродажа").tag(BusinessType.resale)
+                        Text("Своё").tag(BusinessType.custom)
+                    }
+                    .onChange(of: userConfig.businessType) { _, newValue in
+                        let updated = UserConfig.template(newValue)
+                        userConfig.columns = updated.columns
+                        if userConfig.columns.allSatisfy({ !$0.isVisible }), let first = userConfig.columns.indices.first {
+                            userConfig.columns[first].isVisible = true
+                        }
+                        saveUserConfig()
+                    }
+                }
+
+                Section("Колонки таблицы") {
+                    ForEach(Array(userConfig.columns.enumerated()), id: \.element.id) { index, column in
+                        HStack {
+                            Toggle("", isOn: Binding(
+                                get: { userConfig.columns[index].isVisible },
+                                set: { isOn in
+                                    userConfig.columns[index].isVisible = isOn
+                                    ensureAtLeastOneColumnVisible()
+                                    saveUserConfig()
+                                }
+                            ))
+                            .labelsHidden()
+                            TextField("Название", text: Binding(
+                                get: { userConfig.columns[index].title },
+                                set: { value in
+                                    userConfig.columns[index].title = value
+                                    saveUserConfig()
+                                }
+                            ))
+                        }
+                    }
+                }
+
+                Section("Дата и логика") {
+                    Picker("Формат даты", selection: $userConfig.dateFormat) {
+                        ForEach(dateFormats, id: \.self) { format in
+                            Text(format).tag(format)
+                        }
+                    }
+                    .onChange(of: userConfig.dateFormat) { _, _ in saveUserConfig() }
+                    Toggle("Автоставить дату при создании", isOn: $userConfig.useAutoDate)
+                        .onChange(of: userConfig.useAutoDate) { _, _ in saveUserConfig() }
+                    Toggle("Показывать дату продажи", isOn: $userConfig.showSaleDate)
+                        .onChange(of: userConfig.showSaleDate) { _, _ in saveUserConfig() }
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func moveSection(_ section: SidebarBaseSection, delta: Int) {
+        guard let idx = sidebarConfig.orderedSections.firstIndex(of: section) else { return }
+        let newIndex = idx + delta
+        guard newIndex >= 0 && newIndex < sidebarConfig.orderedSections.count else { return }
+        sidebarConfig.orderedSections.swapAt(idx, newIndex)
+        saveSidebar()
+    }
+
+    private func ensureAtLeastOneColumnVisible() {
+        if userConfig.columns.allSatisfy({ !$0.isVisible }), let first = userConfig.columns.indices.first {
+            userConfig.columns[first].isVisible = true
+        }
+    }
+
+    private func saveSidebar() {
+        SidebarCustomizationStore.shared.save(sidebarConfig)
+    }
+
+    private func saveUserConfig() {
+        ensureAtLeastOneColumnVisible()
+        UserConfigStore.shared.save(userConfig)
+    }
+}
+#endif
+
 // MARK: - Feature Flags Settings
 
 private struct FeatureFlagsSettingsView: View {
@@ -230,26 +368,10 @@ private struct FeatureFlagsSettingsView: View {
                             get: {
                                 // Используем trigger для принудительного обновления UI
                                 let _ = viewModel.featureFlagsUpdateTrigger
-                                let isEnabled = viewModel.isFeatureEnabled(flag)
-                                // Отладка: логируем текущее состояние
-                                print("🔍 [FeatureFlags] GET flag: \(flag.rawValue), enabled: \(isEnabled), trigger: \(viewModel.featureFlagsUpdateTrigger)")
-                                return isEnabled
+                                return viewModel.isFeatureEnabled(flag)
                             },
                             set: { enabled in
-                                // Отладка: логируем изменение
-                                print("🔧 [FeatureFlags] SET flag: \(flag.rawValue), enabled: \(enabled)")
-                                print("   📍 Before: \(viewModel.isFeatureEnabled(flag))")
                                 viewModel.setFeatureEnabled(flag, enabled: enabled)
-                                // Небольшая задержка для проверки изменения
-                                Task { @MainActor in
-                                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 сек
-                                    print("   📍 After: \(viewModel.isFeatureEnabled(flag))")
-                                    if viewModel.isFeatureEnabled(flag) != enabled {
-                                        print("   ⚠️ WARNING: Flag не изменился! Ожидали: \(enabled), получили: \(viewModel.isFeatureEnabled(flag))")
-                                    } else {
-                                        print("   ✅ SUCCESS: Flag изменен успешно")
-                                    }
-                                }
                             }
                         )) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -264,7 +386,7 @@ private struct FeatureFlagsSettingsView: View {
                 } header: {
                     Text("Управление функциями")
                 } footer: {
-                    Text("Включите или выключите функции приложения. Изменения применяются немедленно. Смотрите консоль для отладки.")
+                    Text("Включите или выключите функции приложения. Изменения применяются немедленно.")
                 }
             }
             .padding()

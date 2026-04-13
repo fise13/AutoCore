@@ -16,6 +16,7 @@ import AppKit
 struct AutoCoreApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState: AppState
+    @State private var hasCompletedUserConfigOnboarding = UserConfigStore.shared.hasCompletedOnboarding
     
     init() {
         // Инициализируем Firebase до создания AppState / сервисов.
@@ -34,6 +35,11 @@ struct AutoCoreApp: App {
                         if appState.companyId.isEmpty {
                             OnboardingView(authViewModel: authViewModel)
                                 .id("onboardingView")
+                        } else if !hasCompletedUserConfigOnboarding {
+                            UserConfigOnboardingView {
+                                hasCompletedUserConfigOnboarding = true
+                            }
+                            .id("userConfigOnboardingView")
                         } else if let appViewModel = appState.appViewModel {
                             RootView(appViewModel: appViewModel, appState: appState)
                                 .id("rootView")

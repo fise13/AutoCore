@@ -28,6 +28,8 @@ struct RootView: View {
     @State private var saleBannerMessage: String?
     @State private var saleBannerVisible = false
     @StateObject private var updateService = UpdateService.shared
+    @State private var sidebarCustomization = SidebarCustomizationStore.shared.load()
+    @State private var userConfig = UserConfigStore.shared.load()
     
     // Окно для показа панелей (получается через WindowAccessor)
     @State private var hostWindow: NSWindow?
@@ -205,6 +207,12 @@ struct RootView: View {
                     showAlert(L10n.Root.updateError(errorMessage))
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: SidebarCustomizationStore.didChangeNotification)) { _ in
+                sidebarCustomization = SidebarCustomizationStore.shared.load()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UserConfigStore.didChangeNotification)) { _ in
+                userConfig = UserConfigStore.shared.load()
+            }
             .sheet(isPresented: $isShowingSettings) {
                 if let backupService = appState.backupService,
                    let featureFlagService = appState.featureFlagService,
@@ -364,7 +372,8 @@ struct RootView: View {
                 },
                 onDeleteCategory: { categoryID in
                     appViewModel.deleteSpecificCategory(categoryID: categoryID)
-                }
+                },
+                customization: sidebarCustomization
             )
         } detail: {
             contentView
@@ -455,6 +464,7 @@ struct RootView: View {
                     motors: appViewModel.cachedFilteredMotorDTOs,
                     isLoading: appViewModel.isLoading,
                     totalCount: appViewModel.cachedFilteredMotors.count,
+                    userConfig: userConfig,
                     onToggleSold: { motorID in
                         if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
                             appViewModel.toggleSold(for: motor)

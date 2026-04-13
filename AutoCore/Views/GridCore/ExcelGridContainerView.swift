@@ -5,6 +5,7 @@ import SwiftUI
 /// SwiftUI bridge for `ExcelGridView` with the same callbacks as `MotorListViewExcel`.
 struct ExcelGridMotorSheetRepresentable: NSViewRepresentable {
     var motors: [MotorRowDTO]
+    var userConfig: UserConfig?
     var zoom: CGFloat
     let onToggleSold: (Int64) -> Void
     let onUnsavedChange: (Bool) -> Void
@@ -22,6 +23,8 @@ struct ExcelGridMotorSheetRepresentable: NSViewRepresentable {
         grid.delegate = context.coordinator
         context.coordinator.gridView = grid
         context.coordinator.applyParent(self)
+        context.coordinator.lastMotors = motors
+        grid.applyUserConfig(userConfig)
         grid.reload(motors: motors, mergePending: { context.coordinator.pendingByMotor[$0] })
         grid.setZoom(zoom)
         return grid
@@ -29,8 +32,11 @@ struct ExcelGridMotorSheetRepresentable: NSViewRepresentable {
 
     func updateNSView(_ grid: ExcelGridView, context: Context) {
         context.coordinator.applyParent(self)
-        context.coordinator.lastMotors = motors
-        grid.reload(motors: motors, mergePending: { context.coordinator.pendingByMotor[$0] })
+        grid.applyUserConfig(userConfig)
+        if context.coordinator.lastMotors != motors {
+            context.coordinator.lastMotors = motors
+            grid.reload(motors: motors, mergePending: { context.coordinator.pendingByMotor[$0] })
+        }
         if abs(grid.layout.zoom - zoom) > 0.001 {
             grid.setZoom(zoom)
         }
@@ -68,8 +74,7 @@ struct ExcelGridMotorSheetRepresentable: NSViewRepresentable {
         }
 
         func excelGridDataDidChange(_ grid: ExcelGridView) {
-            recomputePending(from: grid)
-            let unsaved = computeUnsaved(grid: grid)
+            let unsaved = rebuildPendingAndUnsaved(from: grid)
             parent.onUnsavedChange(unsaved)
             NotificationCenter.default.post(name: .motorGridUnsavedChangesChanged, object: unsaved)
         }
@@ -82,31 +87,24 @@ struct ExcelGridMotorSheetRepresentable: NSViewRepresentable {
             parent.onZoomChange(zoom)
         }
 
-        private func recomputePending(from grid: ExcelGridView) {
+        @discardableResult
+        private func rebuildPendingAndUnsaved(from grid: ExcelGridView) -> Bool {
             pendingByMotor.removeAll()
             let baseById = Dictionary(uniqueKeysWithValues: lastMotors.map { ($0.id, $0) })
-            for r in 0..<grid.store.rowCount {
-                guard let row = grid.store.row(at: r), let mid = row.motorID else { continue }
-                guard let base = baseById[mid] else { continue }
-                if row.draft != GridMotorRowDraft(motorDTO: base) {
-                    pendingByMotor[mid] = row.draft
-                }
-            }
-        }
-
-        private func computeUnsaved(grid: ExcelGridView) -> Bool {
-            let baseById = Dictionary(uniqueKeysWithValues: lastMotors.map { ($0.id, $0) })
+            var hasUnsaved = false
             for r in 0..<grid.store.rowCount {
                 guard let row = grid.store.row(at: r) else { continue }
                 if let mid = row.motorID {
-                    if let base = baseById[mid], row.draft != GridMotorRowDraft(motorDTO: base) {
-                        return true
+                    guard let base = baseById[mid] else { continue }
+                    if row.draft != GridMotorRowDraft(motorDTO: base) {
+                        pendingByMotor[mid] = row.draft
+                        hasUnsaved = true
                     }
                 } else if row.draft.hasAnyData {
-                    return true
+                    hasUnsaved = true
                 }
             }
-            return false
+            return hasUnsaved
         }
 
         func runSaveAll() {

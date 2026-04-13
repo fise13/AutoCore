@@ -22,6 +22,7 @@ final class SettingsViewModel: ObservableObject {
     
     enum SettingsSection: String, CaseIterable {
         case general = "Общие"
+        case interface = "Интерфейс"
         case features = "Функции"
         case data = "Данные"
         case importExport = "Импорт / Экспорт"
@@ -31,6 +32,7 @@ final class SettingsViewModel: ObservableObject {
         var icon: String {
             switch self {
             case .general: return "gearshape.fill"
+            case .interface: return "sidebar.left"
             case .features: return "flag.fill"
             case .data: return "externaldrive.fill"
             case .importExport: return "arrow.up.arrow.down"
@@ -63,7 +65,6 @@ final class SettingsViewModel: ObservableObject {
                 guard let self = self else { return }
                 Task { @MainActor in
                     self.featureFlagsUpdateTrigger += 1
-                    print("🔄 [SettingsViewModel] Feature flags changed, triggering UI update (trigger: \(self.featureFlagsUpdateTrigger))")
                 }
             }
             .store(in: &cancellables)
@@ -105,12 +106,10 @@ final class SettingsViewModel: ObservableObject {
     }
     
     func setFeatureEnabled(_ flag: FeatureFlagService.Flag, enabled: Bool) {
-        print("📱 [SettingsViewModel] setFeatureEnabled called: flag=\(flag.rawValue), enabled=\(enabled)")
         do {
             try featureFlagService.setEnabled(flag, enabled: enabled)
-            print("   ✅ ViewModel: Flag updated successfully")
         } catch {
-            print("   ❌ ViewModel: ERROR updating flag: \(error)")
+            // Keep silent for UI performance; caller can observe service state.
         }
     }
     

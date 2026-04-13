@@ -38,8 +38,38 @@ final class ExcelGridView: NSView {
     private var isDraggingSelection = false
     private var pinchZoomStart: CGFloat = 1
     private var baselineDTOs: [Int64: MotorRowDTO] = [:]
+    private var visibleModelColumns: [MotorSheetColumn] = MotorSheetColumn.allCases
+    private var headerTitlesByModelColumn: [Int: String] = [
+        MotorSheetColumn.rowNumber.rawValue: "#",
+        MotorSheetColumn.engineNumber.rawValue: "Номер двигателя",
+        MotorSheetColumn.configuration.rawValue: "Комплектация",
+        MotorSheetColumn.notes.rawValue: "Особые отметки",
+        MotorSheetColumn.quantity.rawValue: "Кол-во",
+        MotorSheetColumn.transmission.rawValue: "Коробка",
+        MotorSheetColumn.arrivalDate.rawValue: "Дата прихода",
+        MotorSheetColumn.soldDate.rawValue: "Дата продажи",
+        MotorSheetColumn.action.rawValue: ""
+    ]
+    private var hoveredCell: GridCellAddress?
+    private var hoveredRow: Int?
+    private var lastUserConfigSignature: String?
+    private var isFillHandleDragging = false
+    private var fillSourceRange: GridRange?
+    private var fillTargetRange: GridRange?
 
     private var boundsObservation: NSObjectProtocol?
+    private var isVisibleLayoutScheduled = false
+
+    private var editableVisualColumns: [Int] {
+        (0..<layout.columnCount).filter { visual in
+            guard let model = modelColumn(forVisual: visual) else { return false }
+            return model.isEditable
+        }
+    }
+
+    private func modelColumn(forVisual visual: Int) -> MotorSheetColumn? {
+        MotorSheetColumn(rawValue: layout.modelColumnIndex(at: visual))
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -96,8 +126,9 @@ final class ExcelGridView: NSView {
                 self.advanceTab(forward: true)
             } else {
                 self.moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
+                self.requestGridSave()
             }
-            self.redrawAll()
+            self.redrawOverlays()
         }
 
         headerContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -119,7 +150,7 @@ final class ExcelGridView: NSView {
 
         buildHeader()
         applyTheme()
-        selection = SelectionController(start: GridCellAddress(row: 0, column: MotorSheetColumn.engineNumber.rawValue))
+        selection = SelectionController(start: GridCellAddress(row: 0, column: defaultEditableVisualColumn()))
 
         boundsObservation = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -127,9 +158,7 @@ final class ExcelGridView: NSView {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.syncHeaderScroll()
-                self.layoutVisibleCells()
+                self?.scheduleVisibleLayoutPass()
             }
         }
 
@@ -166,18 +195,32 @@ final class ExcelGridView: NSView {
             headerDocumentView.heightAnchor.constraint(equalTo: clip.heightAnchor)
         ])
 
-        let titles = [
-            "#", "Номер двигателя", "Комплектация", "Особые отметки", "Кол-во", "Коробка", "Дата прихода", "Дата продажи", ""
-        ]
-        headerFields = titles.map { title in
-            let f = NSTextField(labelWithString: title)
+        rebuildHeaderFields()
+    }
+
+    private func rebuildHeaderFields() {
+        for field in headerFields {
+            field.removeFromSuperview()
+        }
+        headerFields.removeAll(keepingCapacity: true)
+
+        headerFields = (0..<layout.columnCount).map { visualIndex in
+            let f = NSTextField(labelWithString: titleForHeader(visualIndex: visualIndex))
             f.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
             f.textColor = .secondaryLabelColor
             f.alignment = .left
             f.translatesAutoresizingMaskIntoConstraints = false
             headerDocumentView.addSubview(f)
+            let tap = NSClickGestureRecognizer(target: self, action: #selector(handleHeaderClick(_:)))
+            f.addGestureRecognizer(tap)
+            f.tag = visualIndex
             return f
         }
+    }
+
+    private func titleForHeader(visualIndex: Int) -> String {
+        let modelIndex = layout.modelColumnIndex(at: visualIndex)
+        return headerTitlesByModelColumn[modelIndex] ?? ""
     }
 
     private func layoutHeaderFields() {
@@ -186,10 +229,23 @@ final class ExcelGridView: NSView {
         for i in 0..<headerFields.count {
             let w = layout.columnWidth(at: i)
             headerFields[i].frame = CGRect(x: x, y: 0, width: w, height: h)
-            headerFields[i].alignment = i == 0 || i == 4 || i == 6 || i == 7 ? .center : .left
+            headerFields[i].stringValue = titleForHeader(visualIndex: i)
+            let model = modelColumn(forVisual: i)
+            headerFields[i].alignment = (model == .rowNumber || model == .quantity || model == .arrivalDate || model == .soldDate || model == .action) ? .center : .left
+            headerFields[i].tag = i
             x += w
         }
         headerDocumentView.frame = CGRect(x: 0, y: 0, width: layout.totalWidth(), height: h)
+    }
+
+    @objc private func handleHeaderClick(_ recognizer: NSClickGestureRecognizer) {
+        guard let header = recognizer.view as? NSTextField else { return }
+        let visualColumn = header.tag
+        guard let model = modelColumn(forVisual: visualColumn), model.isEditable, store.rowCount > 0 else { return }
+        let top = GridCellAddress(row: 0, column: visualColumn)
+        let bottom = GridCellAddress(row: max(0, store.rowCount - 1), column: visualColumn)
+        selection.selectRange(GridRange.spanning(top, bottom), active: top)
+        redrawOverlays()
     }
 
     private func syncHeaderScroll() {
@@ -197,12 +253,90 @@ final class ExcelGridView: NSView {
         headerDocumentView.frame.origin.x = -ox
     }
 
+    private func defaultEditableVisualColumn() -> Int {
+        editableVisualColumns.first ?? 0
+    }
+
+    func applyUserConfig(_ config: UserConfig?) {
+        let signature = config.map { cfg in
+            "\(cfg.businessType.rawValue)|\(cfg.showSaleDate)|" +
+            cfg.columns.map { "\($0.id):\($0.title):\($0.isVisible)" }.joined(separator: "|")
+        } ?? "default"
+        guard signature != lastUserConfigSignature else { return }
+        lastUserConfigSignature = signature
+
+        if let config {
+            var ordered: [MotorSheetColumn] = [.rowNumber]
+            var titles = headerTitlesByModelColumn
+            for item in config.columns where item.isVisible {
+                guard let model = modelColumn(fromUserConfigID: item.id), model != .rowNumber, model != .action else { continue }
+                if model == .soldDate, config.showSaleDate == false { continue }
+                if !ordered.contains(model) {
+                    ordered.append(model)
+                }
+                titles[model.rawValue] = item.title
+            }
+            if !ordered.contains(where: { $0.isEditable }) {
+                ordered.append(.engineNumber)
+            }
+            ordered.append(.action)
+            visibleModelColumns = ordered
+            headerTitlesByModelColumn = titles
+        } else {
+            visibleModelColumns = MotorSheetColumn.allCases
+            headerTitlesByModelColumn = [
+                MotorSheetColumn.rowNumber.rawValue: "#",
+                MotorSheetColumn.engineNumber.rawValue: "Номер двигателя",
+                MotorSheetColumn.configuration.rawValue: "Комплектация",
+                MotorSheetColumn.notes.rawValue: "Особые отметки",
+                MotorSheetColumn.quantity.rawValue: "Кол-во",
+                MotorSheetColumn.transmission.rawValue: "Коробка",
+                MotorSheetColumn.arrivalDate.rawValue: "Дата прихода",
+                MotorSheetColumn.soldDate.rawValue: "Дата продажи",
+                MotorSheetColumn.action.rawValue: ""
+            ]
+        }
+
+        layout.setColumnOrder(visibleModelColumns.map(\.rawValue))
+        lineView.columnCount = layout.columnCount
+        rebuildHeaderFields()
+        layoutHeaderFields()
+        resizeDocument()
+        redrawAll()
+    }
+
+    private func modelColumn(fromUserConfigID id: String) -> MotorSheetColumn? {
+        switch id {
+        case "engineNumber": return .engineNumber
+        case "configuration": return .configuration
+        case "notes": return .notes
+        case "quantity": return .quantity
+        case "transmission": return .transmission
+        case "arrivalDate": return .arrivalDate
+        case "soldDate": return .soldDate
+        default: return nil
+        }
+    }
+
+    private func scheduleVisibleLayoutPass() {
+        guard !isVisibleLayoutScheduled else { return }
+        isVisibleLayoutScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isVisibleLayoutScheduled = false
+            self.hoveredCell = nil
+            self.hoveredRow = nil
+            self.syncHeaderScroll()
+            self.layoutVisibleCells()
+        }
+    }
+
     func reload(motors: [MotorRowDTO], mergePending: (Int64) -> GridMotorRowDraft?) {
         editor.endEditing(commit: false)
         baselineDTOs = Dictionary(uniqueKeysWithValues: motors.map { ($0.id, $0) })
         store.reload(from: motors, mergePending: mergePending)
         if store.rowCount > 0 {
-            let start = GridCellAddress(row: 0, column: MotorSheetColumn.engineNumber.rawValue)
+            let start = GridCellAddress(row: 0, column: defaultEditableVisualColumn())
             selection = SelectionController(start: start)
         }
         resizeDocument()
@@ -230,6 +364,7 @@ final class ExcelGridView: NSView {
         lineView.frame = documentView.bounds
         activeBorderView.frame = documentView.bounds
         lineView.rowCount = store.rowCount
+        lineView.columnCount = layout.columnCount
         lineView.layout = layout
         lineView.needsDisplay = true
         selectionFillView.layout = layout
@@ -266,6 +401,13 @@ final class ExcelGridView: NSView {
     override func mouseUp(with event: NSEvent) {
         let pt = convertToDocument(event)
         guard let cell = layout.cellAt(point: pt, rowCount: store.rowCount) else {
+            if isFillHandleDragging {
+                isFillHandleDragging = false
+                applyFillHandleIfNeeded()
+                fillSourceRange = nil
+                fillTargetRange = nil
+                return
+            }
             isDraggingSelection = false
             selection.resetAnchorToHead()
             return
@@ -276,34 +418,62 @@ final class ExcelGridView: NSView {
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags
         let shift = flags.contains(.shift)
+        let cmd = flags.contains(.command)
 
-        if flags.contains(.command), event.charactersIgnoringModifiers == "c" {
+        if cmd, event.charactersIgnoringModifiers == "c" {
             copySelection()
             return
         }
-        if flags.contains(.command), event.charactersIgnoringModifiers == "v" {
+        if cmd, event.charactersIgnoringModifiers == "v" {
             pasteAtSelection()
             return
         }
-        if flags.contains(.command), event.charactersIgnoringModifiers == "z" {
+        if cmd, event.charactersIgnoringModifiers == "z" {
             window?.undoManager?.undo()
             redrawAll()
             delegate?.excelGridDataDidChange(self)
             return
         }
+        if event.charactersIgnoringModifiers == "\u{1b}" {
+            editor.endEditing(commit: false)
+            redrawOverlays()
+            return
+        }
+        if !editor.isEditing,
+           let typed = immediateTypedInput(from: event),
+           !typed.isEmpty {
+            beginEditIfEditable(selection.activeCell, seedText: typed)
+            return
+        }
 
         switch event.specialKey {
         case .leftArrow:
-            moveSelection(deltaRow: 0, deltaCol: -1, extend: shift)
+            if cmd {
+                moveSelectionToHorizontalEdge(left: true, extend: shift)
+            } else {
+                moveSelection(deltaRow: 0, deltaCol: -1, extend: shift)
+            }
             redrawOverlays()
         case .rightArrow:
-            moveSelection(deltaRow: 0, deltaCol: 1, extend: shift)
+            if cmd {
+                moveSelectionToHorizontalEdge(left: false, extend: shift)
+            } else {
+                moveSelection(deltaRow: 0, deltaCol: 1, extend: shift)
+            }
             redrawOverlays()
         case .upArrow:
-            moveSelection(deltaRow: -1, deltaCol: 0, extend: shift)
+            if cmd {
+                moveSelectionToVerticalEdge(top: true, extend: shift)
+            } else {
+                moveSelection(deltaRow: -1, deltaCol: 0, extend: shift)
+            }
             redrawOverlays()
         case .downArrow:
-            moveSelection(deltaRow: 1, deltaCol: 0, extend: shift)
+            if cmd {
+                moveSelectionToVerticalEdge(top: false, extend: shift)
+            } else {
+                moveSelection(deltaRow: 1, deltaCol: 0, extend: shift)
+            }
             redrawOverlays()
         case .tab:
             if shift {
@@ -313,8 +483,15 @@ final class ExcelGridView: NSView {
             }
             redrawOverlays()
         case .carriageReturn, .newline:
-            moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
-            redrawOverlays()
+            if editor.isEditing {
+                editor.endEditing(commit: true)
+                delegate?.excelGridDataDidChange(self)
+                moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
+                requestGridSave()
+                redrawOverlays()
+            } else {
+                beginEditIfEditable(selection.activeCell)
+            }
         case .delete, .backspace, .deleteForward:
             deletePrimaryRange()
             redrawAll()
@@ -434,20 +611,27 @@ final class ExcelGridView: NSView {
     private func configurePooledCell(_ v: PooledGridCellView, row: Int, column: Int) {
         v.applyPalette(GridPalette.current(for: effectiveAppearance))
         let address = GridCellAddress(row: row, column: column)
-        v.address = address
-        v.onMouseDown = { [weak self] event, tappedCell in
-            self?.handlePointerDown(event: event, cell: tappedCell)
+        if v.address != address {
+            v.address = address
+            v.onMouseDown = { [weak self] event, tappedCell in
+                self?.handlePointerDown(event: event, cell: tappedCell)
+            }
+            v.onMouseDragged = { [weak self] event, tappedCell in
+                self?.handlePointerDrag(event: event, cell: tappedCell)
+            }
+            v.onMouseUp = { [weak self] event, tappedCell in
+                self?.handlePointerUp(event: event, cell: tappedCell)
+            }
+            v.onHoverChanged = { [weak self] cell, hovered in
+                self?.handleHoverChanged(cell: cell, hovered: hovered)
+            }
         }
-        v.onMouseDragged = { [weak self] event, tappedCell in
-            self?.handlePointerDrag(event: event, cell: tappedCell)
-        }
-        v.onMouseUp = { [weak self] event, tappedCell in
-            self?.handlePointerUp(event: event, cell: tappedCell)
-        }
-        switch column {
-        case MotorSheetColumn.rowNumber.rawValue:
+        v.setHovered(hoveredCell == address)
+        guard let modelColumn = modelColumn(forVisual: column) else { return }
+        switch modelColumn {
+        case .rowNumber:
             v.configureAsRowNumber(row + 1)
-        case MotorSheetColumn.action.rawValue:
+        case .action:
             let mid = store.motorID(atRow: row)
             v.configureAsSellButton(row: row, visible: mid != nil)
             v.onSell = { [weak self] r in
@@ -455,11 +639,24 @@ final class ExcelGridView: NSView {
                 self.delegate?.excelGrid(self, toggleSoldMotorID: id)
             }
         default:
-            let text = store.value(at: GridCellAddress(row: row, column: column))
-            let align: NSTextAlignment = (column == MotorSheetColumn.quantity.rawValue
-                || column == MotorSheetColumn.arrivalDate.rawValue
-                || column == MotorSheetColumn.soldDate.rawValue) ? .center : .left
+            let text = store.value(at: GridCellAddress(row: row, column: modelColumn.rawValue))
+            let align: NSTextAlignment = (modelColumn == .quantity
+                || modelColumn == .arrivalDate
+                || modelColumn == .soldDate) ? .center : .left
             v.configureAsText(text, alignment: align)
+        }
+    }
+
+    private func handleHoverChanged(cell: GridCellAddress?, hovered: Bool) {
+        if hovered {
+            if let previous = hoveredCell, previous != cell {
+                visibleCellViews[previous]?.setHovered(false)
+            }
+            hoveredCell = cell
+            hoveredRow = cell?.row
+        } else if hoveredCell == cell {
+            hoveredCell = nil
+            hoveredRow = nil
         }
     }
 
@@ -473,6 +670,10 @@ final class ExcelGridView: NSView {
     private func redrawAll() {
         redrawOverlays()
         layoutVisibleCells()
+    }
+
+    private func requestGridSave() {
+        NotificationCenter.default.post(name: .motorGridSaveRequested, object: nil)
     }
 
     private func applyTheme() {
@@ -496,6 +697,13 @@ final class ExcelGridView: NSView {
 
     private func handlePointerDown(event: NSEvent, cell: GridCellAddress) {
         window?.makeFirstResponder(self)
+        let point = convertToDocument(event)
+        if isPointInFillHandle(point) {
+            isFillHandleDragging = true
+            fillSourceRange = selection.primaryRange
+            fillTargetRange = selection.primaryRange
+            return
+        }
         if event.clickCount == 2 {
             editor.endEditing(commit: false)
             beginEditIfEditable(cell)
@@ -505,6 +713,15 @@ final class ExcelGridView: NSView {
         editor.endEditing(commit: false)
         let shift = event.modifierFlags.contains(.shift)
         let cmd = event.modifierFlags.contains(.command)
+        if let modelColumn = modelColumn(forVisual: cell.column), modelColumn == .rowNumber {
+            let firstEditable = editableVisualColumns.first ?? 0
+            let lastEditable = editableVisualColumns.last ?? max(firstEditable, layout.columnCount - 1)
+            let range = GridRange(minRow: cell.row, maxRow: cell.row, minColumn: firstEditable, maxColumn: lastEditable)
+            selection.selectRange(range, active: GridCellAddress(row: cell.row, column: firstEditable))
+            isDraggingSelection = false
+            redrawOverlays()
+            return
+        }
         selection.click(at: cell, shift: shift, cmd: cmd)
         isDraggingSelection = true
         redrawOverlays()
@@ -512,6 +729,18 @@ final class ExcelGridView: NSView {
 
     private func handlePointerDrag(event: NSEvent, cell: GridCellAddress) {
         _ = event
+        if isFillHandleDragging, let source = fillSourceRange {
+            let target = GridRange(
+                minRow: min(source.minRow, cell.row),
+                maxRow: max(source.maxRow, cell.row),
+                minColumn: min(source.minColumn, cell.column),
+                maxColumn: max(source.maxColumn, cell.column)
+            )
+            fillTargetRange = target
+            selection.selectRange(target, active: GridCellAddress(row: target.minRow, column: target.minColumn))
+            redrawOverlays()
+            return
+        }
         guard isDraggingSelection else { return }
         selection.dragUpdate(to: cell)
         redrawOverlays()
@@ -519,22 +748,40 @@ final class ExcelGridView: NSView {
 
     private func handlePointerUp(event: NSEvent, cell: GridCellAddress) {
         _ = event
+        if isFillHandleDragging {
+            _ = cell
+            isFillHandleDragging = false
+            fillTargetRange = fillTargetRange ?? fillSourceRange
+            applyFillHandleIfNeeded()
+            fillSourceRange = nil
+            fillTargetRange = nil
+            return
+        }
         _ = cell
         isDraggingSelection = false
         selection.resetAnchorToHead()
     }
 
-    private func beginEditIfEditable(_ cell: GridCellAddress) {
-        guard MotorSheetColumn.editableRange.contains(cell.column) else { return }
+    private func beginEditIfEditable(_ cell: GridCellAddress, seedText: String? = nil) {
+        guard let modelColumn = modelColumn(forVisual: cell.column), modelColumn.isEditable else { return }
         let frame = layout.cellFrame(row: cell.row, column: cell.column)
-        let text = store.value(at: cell)
-        editor.beginEdit(address: cell, frame: frame, text: text)
+        let baseText = store.value(at: GridCellAddress(row: cell.row, column: modelColumn.rawValue))
+        let text = seedText ?? baseText
+        editor.beginEdit(address: cell, frame: frame, text: text, selectAll: seedText == nil)
     }
 
     private func commitCell(_ address: GridCellAddress, text: String) {
-        commandBus.applyCellEdit(address: address, newValue: text, actionName: "Edit Cell")
+        guard let modelColumn = modelColumn(forVisual: address.column), modelColumn.isEditable else { return }
+        let modelAddress = GridCellAddress(row: address.row, column: modelColumn.rawValue)
+        commandBus.applyCellEdit(address: modelAddress, newValue: text, actionName: "Edit Cell")
         delegate?.excelGridDataDidChange(self)
-        redrawAll()
+        refreshVisibleCell(at: address)
+        redrawOverlays()
+    }
+
+    private func refreshVisibleCell(at address: GridCellAddress) {
+        guard let view = visibleCellViews[address] else { return }
+        configurePooledCell(view, row: address.row, column: address.column)
     }
 
     private func moveSelection(deltaRow: Int, deltaCol: Int, extend: Bool) {
@@ -542,7 +789,7 @@ final class ExcelGridView: NSView {
         var r = cur.row + deltaRow
         var c = cur.column + deltaCol
         r = max(0, min(max(0, store.rowCount - 1), r))
-        c = max(0, min(MotorSheetColumn.action.rawValue, c))
+        c = max(0, min(max(0, layout.columnCount - 1), c))
         if deltaRow > 0, r >= store.rowCount - 1 {
             store.expandIfNeeded(visibleRowIndex: r)
             resizeDocument()
@@ -552,24 +799,43 @@ final class ExcelGridView: NSView {
         editor.endEditing(commit: false)
     }
 
+    private func moveSelectionToHorizontalEdge(left: Bool, extend: Bool) {
+        let targetColumn = left ? 0 : max(0, layout.columnCount - 1)
+        let next = GridCellAddress(row: selection.activeCell.row, column: targetColumn)
+        selection.moveHead(to: next, extendSelection: extend)
+        editor.endEditing(commit: false)
+    }
+
+    private func moveSelectionToVerticalEdge(top: Bool, extend: Bool) {
+        let targetRow = top ? 0 : max(0, store.rowCount - 1)
+        let next = GridCellAddress(row: targetRow, column: selection.activeCell.column)
+        selection.moveHead(to: next, extendSelection: extend)
+        editor.endEditing(commit: false)
+    }
+
     private func advanceTab(forward: Bool) {
+        let editable = editableVisualColumns
+        guard !editable.isEmpty else { return }
         var r = selection.activeCell.row
         var c = selection.activeCell.column
+        if !editable.contains(c) {
+            c = editable.first ?? c
+        }
         if forward {
-            if c < MotorSheetColumn.soldDate.rawValue {
-                c = max(MotorSheetColumn.engineNumber.rawValue, c + 1)
+            if let idx = editable.firstIndex(of: c), idx < editable.count - 1 {
+                c = editable[idx + 1]
             } else {
                 r += 1
-                c = MotorSheetColumn.engineNumber.rawValue
+                c = editable.first ?? c
                 store.expandIfNeeded(visibleRowIndex: r)
                 resizeDocument()
             }
         } else {
-            if c > MotorSheetColumn.engineNumber.rawValue {
-                c -= 1
+            if let idx = editable.firstIndex(of: c), idx > 0 {
+                c = editable[idx - 1]
             } else {
                 r = max(0, r - 1)
-                c = MotorSheetColumn.soldDate.rawValue
+                c = editable.last ?? c
             }
         }
         r = max(0, min(store.rowCount - 1, r))
@@ -583,8 +849,8 @@ final class ExcelGridView: NSView {
         for r in range.minRow...range.maxRow {
             var cols: [String] = []
             for c in range.minColumn...range.maxColumn {
-                if MotorSheetColumn.editableRange.contains(c) {
-                    cols.append(store.value(at: GridCellAddress(row: r, column: c)))
+                if let modelColumn = modelColumn(forVisual: c), modelColumn.isEditable {
+                    cols.append(store.value(at: GridCellAddress(row: r, column: modelColumn.rawValue)))
                 } else {
                     cols.append("")
                 }
@@ -605,8 +871,8 @@ final class ExcelGridView: NSView {
             for (cOff, val) in line.enumerated() {
                 let r = origin.row + rOff
                 let c = origin.column + cOff
-                guard MotorSheetColumn.editableRange.contains(c) else { continue }
-                ops.append((GridCellAddress(row: r, column: c), val))
+                guard let modelColumn = modelColumn(forVisual: c), modelColumn.isEditable else { continue }
+                ops.append((GridCellAddress(row: r, column: modelColumn.rawValue), val))
             }
         }
         guard !ops.isEmpty else { return }
@@ -634,8 +900,8 @@ final class ExcelGridView: NSView {
         var toClear: [(GridCellAddress, String)] = []
         for r in range.minRow...range.maxRow {
             for c in range.minColumn...range.maxColumn {
-                guard MotorSheetColumn.editableRange.contains(c) else { continue }
-                let addr = GridCellAddress(row: r, column: c)
+                guard let modelColumn = modelColumn(forVisual: c), modelColumn.isEditable else { continue }
+                let addr = GridCellAddress(row: r, column: modelColumn.rawValue)
                 guard r < store.rowCount else { continue }
                 let cur = store.value(at: addr)
                 guard !cur.isEmpty else { continue }
@@ -651,6 +917,135 @@ final class ExcelGridView: NSView {
         window?.undoManager?.setActionName("Delete")
         delegate?.excelGridDataDidChange(self)
         redrawAll()
+    }
+
+    private func immediateTypedInput(from event: NSEvent) -> String? {
+        let flags = event.modifierFlags
+        if flags.contains(.command) || flags.contains(.option) || flags.contains(.control) {
+            return nil
+        }
+        guard let chars = event.characters, chars.count == 1 else { return nil }
+        guard chars != "\r", chars != "\t", chars != "\u{7f}" else { return nil }
+        if chars.unicodeScalars.allSatisfy({ CharacterSet.controlCharacters.contains($0) }) {
+            return nil
+        }
+        return chars
+    }
+
+    private func fillHandleRect(for range: GridRange) -> CGRect {
+        let topLeft = layout.cellFrame(row: range.minRow, column: range.minColumn)
+        let bottomRight = layout.cellFrame(row: range.maxRow, column: range.maxColumn)
+        let rangeRect = topLeft.union(bottomRight).insetBy(dx: 0.5, dy: 0.5)
+        let size = max(5, min(8, layout.rowHeight * 0.2))
+        return CGRect(
+            x: rangeRect.maxX - size * 0.5,
+            y: rangeRect.maxY - size * 0.5,
+            width: size,
+            height: size
+        )
+    }
+
+    private func isPointInFillHandle(_ point: CGPoint) -> Bool {
+        fillHandleRect(for: selection.primaryRange).insetBy(dx: -4, dy: -4).contains(point)
+    }
+
+    private func applyFillHandleIfNeeded() {
+        guard let source = fillSourceRange, let target = fillTargetRange else { return }
+        guard source != target else {
+            redrawOverlays()
+            return
+        }
+
+        let sourceHeight = max(1, source.maxRow - source.minRow + 1)
+        let sourceWidth = max(1, source.maxColumn - source.minColumn + 1)
+        var ops: [(GridCellAddress, String)] = []
+        ops.reserveCapacity((target.maxRow - target.minRow + 1) * (target.maxColumn - target.minColumn + 1))
+
+        for row in target.minRow...target.maxRow {
+            for visualCol in target.minColumn...target.maxColumn {
+                let visualAddress = GridCellAddress(row: row, column: visualCol)
+                if source.contains(visualAddress) { continue }
+                guard let modelCol = modelColumn(forVisual: visualCol), modelCol.isEditable else { continue }
+                let srcRow = source.minRow + ((row - source.minRow) % sourceHeight)
+                let srcVisualCol = source.minColumn + ((visualCol - source.minColumn) % sourceWidth)
+                guard let srcModelCol = modelColumn(forVisual: srcVisualCol), srcModelCol.isEditable else { continue }
+                let sourceValues: [String] = (source.minRow...source.maxRow).map { sourceRow in
+                    store.value(at: GridCellAddress(row: sourceRow, column: srcModelCol.rawValue))
+                }
+                let relativeRow = row - source.minRow
+                let fillValue = computeFillValue(sourceValues: sourceValues, relativeRow: relativeRow)
+                if fillValue.isEmpty {
+                    let srcValue = store.value(at: GridCellAddress(row: srcRow, column: srcModelCol.rawValue))
+                    ops.append((GridCellAddress(row: row, column: modelCol.rawValue), srcValue))
+                } else {
+                    ops.append((GridCellAddress(row: row, column: modelCol.rawValue), fillValue))
+                }
+            }
+        }
+        guard !ops.isEmpty else {
+            redrawOverlays()
+            return
+        }
+        commandBus.applyBatch(ops, actionName: "Fill")
+        delegate?.excelGridDataDidChange(self)
+        selection.selectRange(target, active: GridCellAddress(row: target.minRow, column: target.minColumn))
+        redrawAll()
+    }
+
+    private func computeFillValue(sourceValues: [String], relativeRow: Int) -> String {
+        guard !sourceValues.isEmpty else { return "" }
+        if sourceValues.count >= 2,
+           let first = parseNumber(sourceValues[0]),
+           let second = parseNumber(sourceValues[1]) {
+            let step = second - first
+            let value = first + (step * Double(relativeRow))
+            return formatNumber(value)
+        }
+        if sourceValues.count >= 2,
+           let datePattern = detectDatePattern(sourceValues: sourceValues) {
+            let next = Calendar.current.date(byAdding: .day, value: datePattern.dayStep * relativeRow, to: datePattern.start) ?? datePattern.start
+            return formatDate(next, format: datePattern.format)
+        }
+        let index = ((relativeRow % sourceValues.count) + sourceValues.count) % sourceValues.count
+        return sourceValues[index]
+    }
+
+    private func parseNumber(_ text: String) -> Double? {
+        let normalized = text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(normalized)
+    }
+
+    private func formatNumber(_ value: Double) -> String {
+        if value.rounded() == value {
+            return String(Int(value))
+        }
+        return String(format: "%.4f", value).replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
+    }
+
+    private func formatDate(_ date: Date, format: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter.string(from: date)
+    }
+
+    private func detectDatePattern(sourceValues: [String]) -> (start: Date, dayStep: Int, format: String)? {
+        let supportedFormats = ["dd.MM.yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd.MM.yy", "d.M.yyyy", "d.M.yy"]
+        for format in supportedFormats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            let parsed = sourceValues.compactMap { formatter.date(from: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            guard parsed.count == sourceValues.count, let first = parsed.first else { continue }
+            let dayStep: Int
+            if parsed.count >= 2 {
+                dayStep = Calendar.current.dateComponents([.day], from: parsed[0], to: parsed[1]).day ?? 0
+            } else {
+                dayStep = 0
+            }
+            return (first, dayStep, format)
+        }
+        return nil
     }
 }
 

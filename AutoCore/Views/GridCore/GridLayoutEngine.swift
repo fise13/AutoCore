@@ -15,27 +15,39 @@ final class GridLayoutEngine {
         self.zoom = zoom
     }
 
+    private var columnOrder: [Int] = Array(0..<9)
+
     var rowHeight: CGFloat { baseRowHeight * zoom }
     var headerHeight: CGFloat { baseHeaderHeight * zoom }
-    var columnCount: Int { baseColumnWidths.count }
+    var columnCount: Int { columnOrder.count }
 
     func setZoom(_ z: CGFloat) {
         zoom = z
     }
 
+    func setColumnOrder(_ order: [Int]) {
+        let normalized = order.filter { $0 >= 0 && $0 < baseColumnWidths.count }
+        columnOrder = normalized.isEmpty ? Array(0..<baseColumnWidths.count) : normalized
+    }
+
+    func modelColumnIndex(at visualIndex: Int) -> Int {
+        guard visualIndex >= 0 && visualIndex < columnOrder.count else { return 0 }
+        return columnOrder[visualIndex]
+    }
+
     func columnWidth(at index: Int) -> CGFloat {
-        guard index >= 0 && index < baseColumnWidths.count else { return 0 }
-        return baseColumnWidths[index] * zoom
+        guard index >= 0 && index < columnOrder.count else { return 0 }
+        return baseColumnWidths[columnOrder[index]] * zoom
     }
 
     func totalWidth() -> CGFloat {
-        baseColumnWidths.indices.reduce(0) { $0 + columnWidth(at: $1) }
+        (0..<columnCount).reduce(0) { $0 + columnWidth(at: $1) }
     }
 
     /// X origin of column in document coordinates.
     func xOrigin(ofColumn column: Int) -> CGFloat {
         var x: CGFloat = 0
-        for c in 0..<min(column, baseColumnWidths.count) {
+        for c in 0..<min(column, columnCount) {
             x += columnWidth(at: c)
         }
         return x
@@ -54,7 +66,7 @@ final class GridLayoutEngine {
         let row = Int(floor(point.y / rowHeight))
         if row < 0 || row >= rowCount { return nil }
         var x: CGFloat = 0
-        for c in 0..<baseColumnWidths.count {
+        for c in 0..<columnCount {
             let w = columnWidth(at: c)
             if point.x >= x && point.x < x + w {
                 return GridCellAddress(row: row, column: c)

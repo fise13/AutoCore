@@ -16,6 +16,7 @@ struct SidebarView: View {
     let onRenameBrand: (Int64, String) -> Void
     let onRenameCategory: (Int64, String) -> Void
     let onDeleteCategory: (Int64) -> Void
+    let customization: SidebarCustomization
 
     @State private var expandedBrands: Set<Int64> = []
     @State private var hoveredItem: String? = nil
@@ -25,62 +26,27 @@ struct SidebarView: View {
     @State private var renameCategoryText = ""
     @State private var categoryToDelete: DatabaseService.SpecificCategory?
 
+    private var enginesByBrand: [Int64: [Engine]] {
+        Dictionary(grouping: engines, by: \.brandID)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     // Основные секции
                     VStack(alignment: .leading, spacing: 4) {
-                        SidebarButton(
-                            title: NavigationSection.all.title,
-                            icon: "list.bullet",
-                            isSelected: selectedSection.id == NavigationSection.all.id,
-                            hoveredItem: $hoveredItem,
-                            action: { 
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                    onSectionChange(.all)
+                        ForEach(customization.orderedSections.filter(customization.isVisible), id: \.self) { section in
+                            SidebarButton(
+                                title: section.title,
+                                icon: section.icon,
+                                isSelected: selectedSection.id == navigationSection(for: section).id,
+                                hoveredItem: $hoveredItem,
+                                action: {
+                                    onSectionChange(navigationSection(for: section))
                                 }
-                            }
-                        )
-                        
-                        SidebarButton(
-                            title: NavigationSection.sold.title,
-                            icon: "checkmark.seal.fill",
-                            isSelected: selectedSection.id == NavigationSection.sold.id,
-                            hoveredItem: $hoveredItem,
-                            action: { 
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                    onSectionChange(.sold)
-                                }
-                            }
-                        )
-                        
-                        SidebarButton(
-                            title: NavigationSection.accounting.title,
-                            icon: "dollarsign.circle.fill",
-                            isSelected: selectedSection.id == NavigationSection.accounting.id,
-                            hoveredItem: $hoveredItem,
-                            action: { 
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                    onSectionChange(.accounting)
-                                }
-                            }
-                        )
-
-                        SidebarButton(
-                            title: NavigationSection.warehouse.title,
-                            icon: "shippingbox.fill",
-                            isSelected: selectedSection.id == NavigationSection.warehouse.id,
-                            hoveredItem: $hoveredItem,
-                            action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    onSectionChange(.warehouse)
-                                }
-                            }
-                        )
+                            )
+                        }
                     }
                     .padding(.top, 12)
                     .padding(.horizontal, 8)
@@ -90,6 +56,7 @@ struct SidebarView: View {
                         .padding(.vertical, 8)
                     
                     // Специфичные категории (динамические)
+                    if customization.showSpecificCategories {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             Text("Специфичные")
@@ -109,9 +76,7 @@ struct SidebarView: View {
                             .buttonStyle(.plain)
                             .help("Новая категория")
                             .onHover { hovering in
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    hoveredItem = hovering ? "add_category" : nil
-                                }
+                                hoveredItem = hovering ? "add_category" : nil
                             }
                         }
                         .padding(.horizontal, 16)
@@ -136,10 +101,7 @@ struct SidebarView: View {
                                     isSelected: selectedSection.categoryID == category.id,
                                     hoveredItem: $hoveredItem,
                                     action: {
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                            // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                            onSectionChange(.specificCategory(categoryID: category.id))
-                                        }
+                                        onSectionChange(.specificCategory(categoryID: category.id))
                                     }
                                 )
                                 .contextMenu {
@@ -159,9 +121,10 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.horizontal, 8)
+                    }
                     
                     // Бренды (только для секции "Все")
-                    if selectedSection.id == NavigationSection.all.id {
+                    if customization.showBrandsBlock && selectedSection.id == NavigationSection.all.id {
                         SidebarDivider()
                             .padding(.vertical, 8)
                         
@@ -180,10 +143,7 @@ struct SidebarView: View {
                                 isSelected: selectedBrandID == nil && selectedEngineID == nil,
                                 hoveredItem: $hoveredItem,
                                 action: {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                        // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                        onClearFilters()
-                                    }
+                                    onClearFilters()
                                 }
                             )
                             
@@ -203,7 +163,7 @@ struct SidebarView: View {
                                     )
                                 ) {
                                     VStack(spacing: 2) {
-                                        ForEach(engines.filter { $0.brandID == brand.id }) { engine in
+                                        ForEach(enginesByBrand[brand.id] ?? []) { engine in
                                             SidebarButton(
                                                 title: engine.code.uppercased(),
                                                 icon: "gearshape.fill",
@@ -211,10 +171,7 @@ struct SidebarView: View {
                                                 indent: true,
                                                 hoveredItem: $hoveredItem,
                                                 action: {
-                                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                        // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                                        onBrandAndEngineChange(brand.id, engine.id)
-                                                    }
+                                                    onBrandAndEngineChange(brand.id, engine.id)
                                                 }
                                             )
                                         }
@@ -227,11 +184,8 @@ struct SidebarView: View {
                                         isSelected: selectedBrandID == brand.id && selectedEngineID == nil,
                                         hoveredItem: $hoveredItem,
                                         action: {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                                expandedBrands.insert(brand.id)
-                                                // Вызываем напрямую, так как мы уже на MainActor в SwiftUI View
-                                                onBrandChange(brand.id)
-                                            }
+                                            expandedBrands.insert(brand.id)
+                                            onBrandChange(brand.id)
                                         }
                                     )
                                     .simultaneousGesture(TapGesture(count: 2).onEnded {
@@ -339,6 +293,15 @@ struct SidebarView: View {
             Text("Будут удалены категория и её специфичные записи.")
         }
     }
+
+    private func navigationSection(for section: SidebarBaseSection) -> NavigationSection {
+        switch section {
+        case .all: return .all
+        case .sold: return .sold
+        case .accounting: return .accounting
+        case .warehouse: return .warehouse
+        }
+    }
 }
 
 // MARK: - Sidebar Button
@@ -372,7 +335,6 @@ private struct SidebarButton: View {
                         .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                         .foregroundColor(isSelected ? .accentColor : (isHovered ? .primary : .secondary))
                         .frame(width: 16)
-                        .symbolEffect(.bounce, value: isSelected)
                 }
                 
                 Text(title)
@@ -398,15 +360,10 @@ private struct SidebarButton: View {
                     )
             }
             .contentShape(RoundedRectangle(cornerRadius: 8))
-            .scaleEffect(isHovered && !isSelected ? 1.02 : 1.0)
         }
         .buttonStyle(.plain)
-        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isSelected)
-        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isHovered)
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                hoveredItem = hovering ? itemID : nil
-            }
+            hoveredItem = hovering ? itemID : nil
         }
     }
 }
