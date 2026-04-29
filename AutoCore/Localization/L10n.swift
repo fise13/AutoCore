@@ -43,9 +43,17 @@ enum L10n {
         static var chooseSignIn: String { tr("login.choose_sign_in", "Choose a sign-in method") }
         static var signInGoogle: String { tr("login.sign_in_google", "Sign in with Google") }
         static var orEmail: String { tr("login.or_email", "or with email") }
+        static var emailPlaceholder: String { tr("login.email_placeholder", "Email") }
         static var password: String { tr("login.password", "Password") }
         static var confirmPassword: String { tr("login.confirm_password", "Confirm password") }
         static var passwordsMismatch: String { tr("login.passwords_mismatch", "Passwords do not match") }
+        static var invalidEmail: String { tr("login.invalid_email", "Enter a valid email address.") }
+        static var forgotPassword: String { tr("login.forgot_password", "Forgot password?") }
+        static var sendingReset: String { tr("login.sending_reset", "Sending reset email…") }
+        static var resetEmailSentFormat: String { tr("login.reset_email_sent_format", "We sent reset instructions to %@.") }
+        static var passwordMinLengthFormat: String {
+            tr("login.password_min_length_format", "Password must be at least %lld characters.")
+        }
         static var signIn: String { tr("login.sign_in", "Sign in") }
         static var signUp: String { tr("login.sign_up", "Sign up") }
         static var haveAccountSignIn: String { tr("login.have_account_sign_in", "Already have an account? Sign in") }

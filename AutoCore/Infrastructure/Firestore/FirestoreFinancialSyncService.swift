@@ -118,6 +118,13 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                 guard let self else { return }
                 if let error {
                     self.logger.error("Firestore observe error", error: error)
+                    let ns = error as NSError
+                    if ns.domain == FirestoreErrorDomain,
+                       ns.code == FirestoreErrorCode.resourceExhausted.rawValue {
+                        self.logger.info("Firestore observe paused: resource exhausted (quota). Listener stopped until next app launch.")
+                        continuation.finish()
+                        return
+                    }
                     continuation.yield([])
                     return
                 }

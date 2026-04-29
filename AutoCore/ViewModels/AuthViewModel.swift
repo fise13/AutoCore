@@ -19,8 +19,11 @@ final class AuthViewModel: ObservableObject {
     
     /// Текущее состояние аутентификации
     /// Единственное @Published свойство - используется напрямую в UI
-    @Published var authState: AuthState = .unauthenticated
-    
+    @Published var authState: AuthState = .loading
+
+    /// Показывает, что в данный момент идёт вход через Apple/Google (для блокировки UI)
+    @Published private(set) var isProviderSigningIn = false
+
     /// Сообщение об ошибке (nil если ошибок нет)
     @Published private(set) var errorMessage: String?
 
@@ -56,11 +59,11 @@ final class AuthViewModel: ObservableObject {
     init(authService: AuthService) {
         self.authService = authService
         
-        // Инициализируем текущее состояние
+        // На старте всегда показываем loading/splash до подтверждения состояния от Auth stream.
         if let currentUser = authService.currentUser {
             self.authState = .authenticated(currentUser)
         } else {
-            self.authState = .unauthenticated
+            self.authState = .loading
         }
         
         // Подписываемся на изменения состояния аутентификации через AsyncStream
@@ -94,13 +97,15 @@ final class AuthViewModel: ObservableObject {
     
     /// Вход через Google
     func signInWithGoogle() async {
+        guard !isProviderSigningIn else { return }
         errorMessage = nil
+        isProviderSigningIn = true
         lastRetryAction = { [weak self] in await self?.signInWithGoogle() }
+        defer { isProviderSigningIn = false }
         do {
             _ = try await authService.signInWithGoogle()
-            // Состояние обновится автоматически через authStateStream
         } catch let error as AuthError {
-            errorMessage = error.localizedMessage
+            if case .cancelled = error { errorMessage = nil } else { errorMessage = error.localizedMessage }
         } catch {
             errorMessage = "Ошибка входа через Google: \(error.localizedDescription)"
         }
@@ -138,13 +143,14 @@ final class AuthViewModel: ObservableObject {
     
     /// Вход через Apple ID (Sign in with Apple)
     func handleAppleSignIn(credential: ASAuthorizationAppleIDCredential, rawNonce: String) async {
+        guard !isProviderSigningIn else { return }
         errorMessage = nil
-        let credential = credential
+        isProviderSigningIn = true
         let nonce = rawNonce
         lastRetryAction = { [weak self] in await self?.handleAppleSignIn(credential: credential, rawNonce: nonce) }
+        defer { isProviderSigningIn = false }
         do {
             _ = try await authService.signInWithApple(credential: credential, rawNonce: nonce)
-            // Состояние обновится автоматически через authStateStream
         } catch let error as AuthError {
             errorMessage = error.localizedMessage
         } catch {
@@ -239,6 +245,30 @@ final class AuthViewModel: ObservableObject {
             errorMessage = error.localizedMessage
         } catch {
             errorMessage = "Ошибка обновления профиля: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Изменить пароль текущего email-аккаунта. Возвращает читаемое сообщение об ошибке (или nil, если успешно).
+    func changePassword(currentPassword: String, newPassword: String) async -> String? {
+        do {
+            try await authService.changePassword(currentPassword: currentPassword, newPassword: newPassword)
+            return nil
+        } catch let error as AuthError {
+            return error.localizedMessage
+        } catch {
+            return error.localizedDescription
+        }
+    }
+    
+    /// Отправить письмо для сброса пароля. Возвращает читаемое сообщение об ошибке (или nil, если письмо отправлено).
+    func sendPasswordReset(email: String) async -> String? {
+        do {
+            try await authService.sendPasswordReset(email: email)
+            return nil
+        } catch let error as AuthError {
+            return error.localizedMessage
+        } catch {
+            return error.localizedDescription
         }
     }
 }

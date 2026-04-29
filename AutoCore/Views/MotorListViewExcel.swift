@@ -4,6 +4,7 @@ import Combine
 #if false
 
 struct MotorListViewExcel: View {
+    @ObservedObject private var viewModel: MotorGridTableViewModel
     let motors: [MotorRowDTO]
     let isLoading: Bool
     let totalCount: Int
@@ -634,8 +635,8 @@ struct MotorListViewExcel: View {
     let onOpenDetails: ((Int64) -> Void)?
     let onSaveMotorRow: (Int64, MotorInlineDraft) -> Void
     let onCreateMotor: ((MotorInlineDraft) -> Void)?
+    @ObservedObject private var viewModel: MotorGridTableViewModel
 
-    @StateObject private var viewModel = MotorGridTableViewModel()
     @FocusState private var focusedCell: GridFocusID?
     @State private var tableZoom: CGFloat = 1.0
     @State private var saveStatusText: String = "Все сохранено"
@@ -702,6 +703,7 @@ struct MotorListViewExcel: View {
     }
 
     init(
+        tableViewModel: MotorGridTableViewModel,
         motors: [MotorRowDTO],
         selectedMotorIDs: Set<Int64> = [],
         isLoading: Bool,
@@ -715,6 +717,7 @@ struct MotorListViewExcel: View {
         onSaveMotorRow: @escaping (Int64, MotorInlineDraft) -> Void,
         onCreateMotor: ((MotorInlineDraft) -> Void)? = nil
     ) {
+        self._viewModel = ObservedObject(wrappedValue: tableViewModel)
         self.motors = motors
         self.isLoading = isLoading
         self.totalCount = totalCount
@@ -1033,10 +1036,19 @@ final class MotorGridTableViewModel: ObservableObject {
     private let expandThreshold = 24
     private var pendingDraftByMotorID: [Int64: MotorInlineDraft] = [:]
     private var pendingCreateRows: Set<UUID> = []
+    private var lastReloadIDs: [Int64] = []
+    private var lastReloadCount: Int = 0
 
     init() {}
 
     func reload(from motors: [MotorRowDTO]) {
+        let currentIDs = motors.map(\.id)
+        if currentIDs == lastReloadIDs && motors.count == lastReloadCount {
+            return
+        }
+        lastReloadIDs = currentIDs
+        lastReloadCount = motors.count
+
         let existingByMotorID = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
             row.motorID.map { ($0, row) }
         })

@@ -53,6 +53,8 @@ final class ExcelGridView: NSView {
     private var hoveredCell: GridCellAddress?
     private var hoveredRow: Int?
     private var lastUserConfigSignature: String?
+    /// Двойной Ctrl/Cmd+A — сначала только данные, затем весь лист.
+    private var lastSelectAllAt: Date?
     private var isFillHandleDragging = false
     private var fillSourceRange: GridRange?
     private var fillTargetRange: GridRange?
@@ -120,14 +122,20 @@ final class ExcelGridView: NSView {
         editor.onCancel = { [weak self] in
             self?.redrawAll()
         }
-        editor.onNavigate = { [weak self] isTab in
+        editor.onUserMovedAfterCommit = { [weak self] move in
             guard let self else { return }
-            if isTab {
-                self.advanceTab(forward: true)
-            } else {
+            switch move {
+            case .down:
                 self.moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
-                self.requestGridSave()
+            case .up:
+                self.moveSelection(deltaRow: -1, deltaCol: 0, extend: false)
+            case .tab:
+                self.advanceTab(forward: true)
+            case .backTab:
+                self.advanceTab(forward: false)
             }
+            self.requestGridSave()
+            _ = self.window?.makeFirstResponder(self)
             self.redrawOverlays()
         }
 
@@ -419,19 +427,53 @@ final class ExcelGridView: NSView {
         let flags = event.modifierFlags
         let shift = flags.contains(.shift)
         let cmd = flags.contains(.command)
+        let ctrl = flags.contains(.control)
+        let excelMod = cmd || ctrl
+        let ch = event.charactersIgnoringModifiers?.lowercased()
 
-        if cmd, event.charactersIgnoringModifiers == "c" {
+        if cmd || ctrl, ch == "c" {
             copySelection()
             return
         }
-        if cmd, event.charactersIgnoringModifiers == "v" {
+        if cmd || ctrl, ch == "v" {
             pasteAtSelection()
             return
         }
-        if cmd, event.charactersIgnoringModifiers == "z" {
+        if cmd || ctrl, ch == "x" {
+            copySelection()
+            deletePrimaryRange()
+            return
+        }
+        if cmd, ch == "z", !shift {
             window?.undoManager?.undo()
             redrawAll()
             delegate?.excelGridDataDidChange(self)
+            return
+        }
+        if cmd, shift, ch == "z" {
+            window?.undoManager?.redo()
+            redrawAll()
+            delegate?.excelGridDataDidChange(self)
+            return
+        }
+        if ctrl, ch == "y" {
+            window?.undoManager?.redo()
+            redrawAll()
+            delegate?.excelGridDataDidChange(self)
+            return
+        }
+        if (cmd || ctrl), ch == "a" {
+            applySelectAllSequence()
+            scrollToActiveCellIfNeeded()
+            redrawOverlays()
+            return
+        }
+        if ctrl, ch == "d" {
+            fillDownFromTopRow()
+            return
+        }
+        if ctrl, ch == "r" {
+            fillRightFromLeftColumn()
             return
         }
         if event.charactersIgnoringModifiers == "\u{1b}" {
@@ -439,67 +481,349 @@ final class ExcelGridView: NSView {
             redrawOverlays()
             return
         }
-        if !editor.isEditing,
-           let typed = immediateTypedInput(from: event),
-           !typed.isEmpty {
+        if !editor.isEditing, let typed = immediateTypedInput(from: event), !typed.isEmpty {
             beginEditIfEditable(selection.activeCell, seedText: typed)
             return
         }
 
-        switch event.specialKey {
-        case .leftArrow:
-            if cmd {
-                moveSelectionToHorizontalEdge(left: true, extend: shift)
-            } else {
-                moveSelection(deltaRow: 0, deltaCol: -1, extend: shift)
-            }
-            redrawOverlays()
-        case .rightArrow:
-            if cmd {
-                moveSelectionToHorizontalEdge(left: false, extend: shift)
-            } else {
-                moveSelection(deltaRow: 0, deltaCol: 1, extend: shift)
-            }
-            redrawOverlays()
-        case .upArrow:
-            if cmd {
-                moveSelectionToVerticalEdge(top: true, extend: shift)
-            } else {
-                moveSelection(deltaRow: -1, deltaCol: 0, extend: shift)
-            }
-            redrawOverlays()
-        case .downArrow:
-            if cmd {
-                moveSelectionToVerticalEdge(top: false, extend: shift)
-            } else {
-                moveSelection(deltaRow: 1, deltaCol: 0, extend: shift)
-            }
-            redrawOverlays()
-        case .tab:
-            if shift {
-                advanceTab(forward: false)
-            } else {
-                advanceTab(forward: true)
-            }
-            redrawOverlays()
-        case .carriageReturn, .newline:
-            if editor.isEditing {
-                editor.endEditing(commit: true)
-                delegate?.excelGridDataDidChange(self)
-                moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
-                requestGridSave()
-                redrawOverlays()
-            } else {
-                beginEditIfEditable(selection.activeCell)
-            }
-        case .delete, .backspace, .deleteForward:
-            deletePrimaryRange()
-            redrawAll()
-        case .f2:
-            beginEditIfEditable(selection.activeCell)
-        default:
-            super.keyDown(with: event)
+        // Page Up / Page Down
+        if event.keyCode == 116 || event.keyCode == 121 {
+            pageScroll(down: event.keyCode == 121)
+            return
         }
+
+        // Home / End (клавиши и сочетания)
+        if homeEndKey(event: event, shift: shift, excelMod: excelMod) {
+            scrollToActiveCellIfNeeded()
+            redrawOverlays()
+            return
+        }
+
+        // Ctrl+Space / Shift+Space
+        if ctrl, event.keyCode == 49 { // Space
+            selectEntireColumn()
+            scrollToActiveCellIfNeeded()
+            redrawOverlays()
+            return
+        }
+        if shift, event.keyCode == 49, !ctrl, !cmd {
+            selectEntireRow()
+            scrollToActiveCellIfNeeded()
+            redrawOverlays()
+            return
+        }
+
+        // Enter: Shift+Enter — вверх (когда не в редакторе)
+        if !editor.isEditing, (event.keyCode == 36 || event.keyCode == 76), shift {
+            moveSelection(deltaRow: -1, deltaCol: 0, extend: false)
+            scrollToActiveCellIfNeeded()
+            redrawOverlays()
+            return
+        }
+
+        // Ctrl+Enter — заполнить выделение активным значением
+        if ctrl, (event.keyCode == 36 || event.keyCode == 76), !shift {
+            fillSelectionWithActiveValue()
+            return
+        }
+
+        if let sk = event.specialKey {
+            switch sk {
+            case .leftArrow:
+                if excelMod {
+                    applyDataBlockJump(horizontal: true, direction: -1, extend: shift)
+                } else {
+                    moveSelection(deltaRow: 0, deltaCol: -1, extend: shift)
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+            case .rightArrow:
+                if excelMod {
+                    applyDataBlockJump(horizontal: true, direction: 1, extend: shift)
+                } else {
+                    moveSelection(deltaRow: 0, deltaCol: 1, extend: shift)
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+            case .upArrow:
+                if excelMod {
+                    applyDataBlockJump(horizontal: false, direction: -1, extend: shift)
+                } else {
+                    moveSelection(deltaRow: -1, deltaCol: 0, extend: shift)
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+            case .downArrow:
+                if excelMod {
+                    applyDataBlockJump(horizontal: false, direction: 1, extend: shift)
+                } else {
+                    moveSelection(deltaRow: 1, deltaCol: 0, extend: shift)
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+            case .tab:
+                if shift {
+                    advanceTab(forward: false)
+                } else {
+                    advanceTab(forward: true)
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+            case .carriageReturn, .newline:
+                if !editor.isEditing {
+                    moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
+                    scrollToActiveCellIfNeeded()
+                    redrawOverlays()
+                }
+            case .delete, .backspace, .deleteForward:
+                deletePrimaryRange()
+                redrawAll()
+            default:
+                super.keyDown(with: event)
+                return
+            }
+            return
+        }
+
+        if !editor.isEditing {
+            let kc = event.keyCode
+            if (123...126).contains(kc) {
+                let goLeft = kc == 123
+                let goRight = kc == 124
+                let goDown = kc == 125
+                let goUp = kc == 126
+                if excelMod {
+                    if goLeft { applyDataBlockJump(horizontal: true, direction: -1, extend: shift) }
+                    if goRight { applyDataBlockJump(horizontal: true, direction: 1, extend: shift) }
+                    if goUp { applyDataBlockJump(horizontal: false, direction: -1, extend: shift) }
+                    if goDown { applyDataBlockJump(horizontal: false, direction: 1, extend: shift) }
+                } else {
+                    if goLeft { moveSelection(deltaRow: 0, deltaCol: -1, extend: shift) }
+                    if goRight { moveSelection(deltaRow: 0, deltaCol: 1, extend: shift) }
+                    if goUp { moveSelection(deltaRow: -1, deltaCol: 0, extend: shift) }
+                    if goDown { moveSelection(deltaRow: 1, deltaCol: 0, extend: shift) }
+                }
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+                return
+            }
+            if kc == 36 || kc == 76, !shift {
+                moveSelection(deltaRow: 1, deltaCol: 0, extend: false)
+                scrollToActiveCellIfNeeded()
+                redrawOverlays()
+                return
+            }
+        }
+
+        if event.keyCode == 120 {
+            beginEditIfEditable(selection.activeCell)
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    private func homeEndKey(event: NSEvent, shift: Bool, excelMod: Bool) -> Bool {
+        let k = event.keyCode
+        let sk = event.specialKey
+        // 115 Home, 119 End (часто)
+        let isHome = k == 115 || sk == .home
+        let isEnd = k == 119 || sk == .end
+        guard isHome || isEnd else { return false }
+
+        if excelMod, isHome {
+            let a = GridCellAddress(row: 0, column: 0)
+            selection.moveHead(to: a, extendSelection: shift)
+            editor.endEditing(commit: false)
+            return true
+        }
+        if excelMod, isEnd {
+            if let last = GridDataRegionNavigation.lastUsedCell(
+                navigable: editableVisualColumns,
+                rowCount: store.rowCount,
+                layout: layout,
+                store: store
+            ) {
+                selection.moveHead(to: last, extendSelection: shift)
+            } else {
+                let a = GridCellAddress(row: max(0, store.rowCount - 1), column: max(0, layout.columnCount - 1))
+                selection.moveHead(to: a, extendSelection: shift)
+            }
+            editor.endEditing(commit: false)
+            return true
+        }
+        if isHome {
+            let c = 0
+            let a = GridCellAddress(row: selection.activeCell.row, column: c)
+            selection.moveHead(to: a, extendSelection: shift)
+            editor.endEditing(commit: false)
+            return true
+        }
+        if isEnd {
+            let c = max(0, layout.columnCount - 1)
+            let a = GridCellAddress(row: selection.activeCell.row, column: c)
+            selection.moveHead(to: a, extendSelection: shift)
+            editor.endEditing(commit: false)
+            return true
+        }
+        return false
+    }
+
+    private func pageScroll(down: Bool) {
+        let h = scrollView.contentView.bounds.height
+        var o = scrollView.contentView.bounds.origin
+        o.y += (down ? 1 : -1) * max(40, h * 0.85)
+        let docH = documentView.frame.height
+        let maxY = max(0, docH - h)
+        o.y = min(max(0, o.y), maxY)
+        scrollView.contentView.setBoundsOrigin(o)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollToActiveCellIfNeeded() {
+        let c = selection.activeCell
+        let f = layout.cellFrame(row: c.row, column: c.column)
+        _ = documentView.scrollToVisible(f.insetBy(dx: -4, dy: -4))
+    }
+
+    private func applyDataBlockJump(horizontal: Bool, direction: Int, extend: Bool) {
+        let nav = editableVisualColumns
+        guard !nav.isEmpty else { return }
+        let cur = selection.activeCell
+        if horizontal {
+            guard let nv = GridDataRegionNavigation.jumpColumnInRow(
+                row: cur.row,
+                fromVisual: cur.column,
+                direction: direction,
+                navigable: nav,
+                layout: layout,
+                store: store
+            ) else { return }
+            selection.moveHead(to: GridCellAddress(row: cur.row, column: nv), extendSelection: extend)
+        } else {
+            guard let nr = GridDataRegionNavigation.jumpRowInColumn(
+                column: cur.column,
+                fromRow: cur.row,
+                direction: direction,
+                rowCount: store.rowCount,
+                layout: layout,
+                store: store
+            ) else { return }
+            selection.moveHead(to: GridCellAddress(row: nr, column: cur.column), extendSelection: extend)
+        }
+        editor.endEditing(commit: false)
+    }
+
+    private func applySelectAllSequence() {
+        let now = Date()
+        let doubleTap = lastSelectAllAt.map { now.timeIntervalSince($0) < 0.6 } ?? false
+        lastSelectAllAt = now
+
+        let lastCol = max(0, layout.columnCount - 1)
+        let lastRow = max(0, store.rowCount - 1)
+        if doubleTap {
+            let full = GridRange(minRow: 0, maxRow: lastRow, minColumn: 0, maxColumn: lastCol)
+            selection.selectRange(full, active: GridCellAddress(row: 0, column: 0))
+            return
+        }
+        if let box = GridDataRegionNavigation.boundingDataRange(
+            navigable: editableVisualColumns,
+            rowCount: store.rowCount,
+            layout: layout,
+            store: store
+        ) {
+            selection.selectRange(box, active: GridCellAddress(row: box.minRow, column: box.minColumn))
+        } else if store.rowCount > 0 {
+            let r = GridRange(minRow: 0, maxRow: lastRow, minColumn: navMin(), maxColumn: navMax())
+            selection.selectRange(r, active: GridCellAddress(row: 0, column: navMin()))
+        }
+        editor.endEditing(commit: false)
+    }
+
+    private func navMin() -> Int { editableVisualColumns.first ?? 0 }
+    private func navMax() -> Int { editableVisualColumns.last ?? max(0, layout.columnCount - 1) }
+
+    private func selectEntireColumn() {
+        let c = selection.activeCell.column
+        guard store.rowCount > 0 else { return }
+        let r = GridRange(minRow: 0, maxRow: store.rowCount - 1, minColumn: c, maxColumn: c)
+        selection.selectRange(r, active: GridCellAddress(row: selection.activeCell.row, column: c))
+        editor.endEditing(commit: false)
+    }
+
+    private func selectEntireRow() {
+        guard store.rowCount > 0 else { return }
+        let r = selection.activeCell.row
+        let lo = navMin()
+        let hi = navMax()
+        let range = GridRange(minRow: r, maxRow: r, minColumn: lo, maxColumn: hi)
+        selection.selectRange(range, active: GridCellAddress(row: r, column: lo))
+        editor.endEditing(commit: false)
+    }
+
+    private func fillSelectionWithActiveValue() {
+        let active = selection.activeCell
+        guard let m = modelColumn(forVisual: active.column), m.isEditable else { return }
+        let fill = store.value(at: GridCellAddress(row: active.row, column: m.rawValue))
+        var pairs: [(GridCellAddress, String)] = []
+        for rng in selection.allRanges() {
+            for r in rng.minRow...rng.maxRow {
+                for c in rng.minColumn...rng.maxColumn {
+                    guard c != active.column || r != active.row else { continue }
+                    guard let col = modelColumn(forVisual: c), col.isEditable else { continue }
+                    pairs.append((GridCellAddress(row: r, column: col.rawValue), fill))
+                }
+            }
+        }
+        guard !pairs.isEmpty else { return }
+        let maxR = pairs.map(\.0.row).max() ?? 0
+        store.ensureRowCount(maxR + 1)
+        window?.undoManager?.beginUndoGrouping()
+        commandBus.applyBatch(pairs, actionName: "Fill")
+        window?.undoManager?.endUndoGrouping()
+        window?.undoManager?.setActionName("Ctrl+Enter")
+        delegate?.excelGridDataDidChange(self)
+        resizeDocument()
+        redrawAll()
+    }
+
+    private func fillDownFromTopRow() {
+        let range = selection.primaryRange
+        guard range.maxRow > range.minRow else { return }
+        var pairs: [(GridCellAddress, String)] = []
+        for c in range.minColumn...range.maxColumn {
+            guard let mc = modelColumn(forVisual: c), mc.isEditable else { continue }
+            let v = store.value(at: GridCellAddress(row: range.minRow, column: mc.rawValue))
+            for r in (range.minRow + 1)...range.maxRow {
+                pairs.append((GridCellAddress(row: r, column: mc.rawValue), v))
+            }
+        }
+        guard !pairs.isEmpty else { return }
+        window?.undoManager?.beginUndoGrouping()
+        commandBus.applyBatch(pairs, actionName: "Fill Down")
+        window?.undoManager?.endUndoGrouping()
+        delegate?.excelGridDataDidChange(self)
+        redrawAll()
+    }
+
+    private func fillRightFromLeftColumn() {
+        let range = selection.primaryRange
+        guard range.maxColumn > range.minColumn else { return }
+        var pairs: [(GridCellAddress, String)] = []
+        for r in range.minRow...range.maxRow {
+            for c in (range.minColumn + 1)...range.maxColumn {
+                guard let dest = modelColumn(forVisual: c), let srcM = modelColumn(forVisual: range.minColumn),
+                      dest.isEditable, srcM.isEditable else { continue }
+                let v = store.value(at: GridCellAddress(row: r, column: srcM.rawValue))
+                pairs.append((GridCellAddress(row: r, column: dest.rawValue), v))
+            }
+        }
+        guard !pairs.isEmpty else { return }
+        window?.undoManager?.beginUndoGrouping()
+        commandBus.applyBatch(pairs, actionName: "Fill Right")
+        window?.undoManager?.endUndoGrouping()
+        delegate?.excelGridDataDidChange(self)
+        redrawAll()
     }
 
     @objc private func handlePinch(_ gr: NSMagnificationGestureRecognizer) {
@@ -795,20 +1119,6 @@ final class ExcelGridView: NSView {
             resizeDocument()
         }
         let next = GridCellAddress(row: r, column: c)
-        selection.moveHead(to: next, extendSelection: extend)
-        editor.endEditing(commit: false)
-    }
-
-    private func moveSelectionToHorizontalEdge(left: Bool, extend: Bool) {
-        let targetColumn = left ? 0 : max(0, layout.columnCount - 1)
-        let next = GridCellAddress(row: selection.activeCell.row, column: targetColumn)
-        selection.moveHead(to: next, extendSelection: extend)
-        editor.endEditing(commit: false)
-    }
-
-    private func moveSelectionToVerticalEdge(top: Bool, extend: Bool) {
-        let targetRow = top ? 0 : max(0, store.rowCount - 1)
-        let next = GridCellAddress(row: targetRow, column: selection.activeCell.column)
         selection.moveHead(to: next, extendSelection: extend)
         editor.endEditing(commit: false)
     }

@@ -20,5 +20,9 @@
 	<array>
 		<string>$(AppIdentifierPrefix)fise.AutoCore</string>
 	</array>
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
 </dict>
 </plist>

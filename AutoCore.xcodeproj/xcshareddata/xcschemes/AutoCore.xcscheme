@@ -32,14 +32,23 @@
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
-      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
-      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      selectedDebuggerIdentifier = ""
+      selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn"
       launchStyle = "0"
       useCustomWorkingDirectory = "NO"
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Clear local breakpoints"
+               scriptText = "BREAKPOINTS_FILE=&quot;${SRCROOT}/AutoCore.xcodeproj/xcuserdata/${USER}.xcuserdatad/xcdebugger/Breakpoints_v2.xcbkptlist&quot;&#10;if [ -f &quot;$BREAKPOINTS_FILE&quot; ]; then&#10;  cat &gt; &quot;$BREAKPOINTS_FILE&quot; &lt;&lt;&apos;EOF&apos;&#10;&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;&#10;&lt;Bucket&#10;   type = &quot;1&quot;&#10;   version = &quot;2.0&quot;&gt;&#10;  &lt;Breakpoints&gt;&#10;  &lt;/Breakpoints&gt;&#10;&lt;/Bucket&gt;&#10;EOF&#10;fi&#10;">
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference

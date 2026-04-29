@@ -41,6 +41,9 @@ final class AppState: ObservableObject {
 
     private func handleAuthStateChange(_ state: AuthState) {
         switch state {
+        case .loading:
+            // Ждем подтверждения сессии; не трогаем текущий стек, чтобы не вызывать UI flicker.
+            break
         case .unauthenticated:
             let hadBoundUser = boundUserId != nil
             boundUserId = nil

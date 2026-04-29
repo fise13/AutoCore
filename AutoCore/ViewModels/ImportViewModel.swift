@@ -18,14 +18,18 @@ final class ImportViewModel: ObservableObject {
     @Published var importProgress: (current: Int, total: Int)?
     @Published var errorMessage: String?
     @Published var existingBrands: [Brand] = []
-    
+    /// Статус/подсказка по сопоставлению листов через OpenRouter (только API, без Vision).
+    @Published var aiMappingNotes: String?
+    @Published var isAIMapping = false
+
     // Текущий лист, для которого настраиваются колонки
     @Published var currentSheetConfigID: UUID?
-    
+
     let database: DatabaseService
     /// Текущая компания для привязки импортируемых моторов.
     var companyId: String = "default"
     private let importService = ExcelImportService()
+    private let importAIMapping = ImportOpenRouterMappingService()
     private var rawSheetData: [ImportSheetData] = []
     
     init(database: DatabaseService, companyId: String = "default") {
@@ -37,6 +41,7 @@ final class ImportViewModel: ObservableObject {
         Task { @MainActor in
             isLoading = true
             errorMessage = nil
+            aiMappingNotes = nil
         }
         
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -93,6 +98,238 @@ final class ImportViewModel: ObservableObject {
             }
         }
         isLoading = false
+        loadExistingBrands()
+        Task { await runImportAIMapping() }
+    }
+
+    /// Сопоставление листов, брендов/двигателей и колонок (в т.ч. «Проданные» → sold_date) через тот же API, что и OpenAI/OpenRouter.
+    @MainActor
+    private func runImportAIMapping() async {
+        let key = OpenRouterKeyProvider.resolved
+        guard !key.isEmpty else {
+            aiMappingNotes = """
+            AI-сопоставление: нет ключа API.
+
+            Как задать:
+            • Среда запуска в Xcode: переменные OPENROUTER_API_KEY (или OPENAI_API_KEY), опционально OPENROUTER_BASE_URL, OPENROUTER_MODEL.
+            • Локально: `defaults write fise.AutoCore OPENROUTER_API_KEY 'ваш_ключ'`, полностью закройте и откройте приложение.
+            """
+            return
+        }
+        isAIMapping = true
+        aiMappingNotes = "AI: сопоставление с каталогом (API)…"
+        defer { isAIMapping = false }
+        do {
+            let brands = try database.fetchBrands()
+            var engines: [Engine] = []
+            var brandNameById: [Int64: String] = [:]
+            for b in brands {
+                brandNameById[b.id] = b.name
+                engines.append(contentsOf: (try? database.fetchEngines(brandID: b.id)) ?? [])
+            }
+            let payloads: [ImportSheetAIPayload] = rawSheetData.map { sheet in
+                let sample = Array(sheet.rows.prefix(8)).map { row in
+                    row.prefix(10).map { String($0.prefix(50)) }
+                }
+                return ImportSheetAIPayload(name: sheet.name, rowCount: sheet.rows.count, sampleRows: sample)
+            }
+            let result = try await importAIMapping.resolve(
+                sheetPayloads: payloads,
+                brands: brands,
+                engines: engines,
+                brandNameById: brandNameById
+            )
+            applyAIResolution(result, brands: brands)
+            aiMappingNotes = result.notes.map { "AI: \($0)" } ?? "AI: сопоставление применено. Проверьте типы листов и колонки на следующем шаге."
+        } catch {
+            aiMappingNotes = formatImportAIErrorForUI(error)
+        }
+    }
+
+    /// Подробное сообщение для панели мастера импорта.
+    private func formatImportAIErrorForUI(_ error: Error) -> String {
+        if let ie = error as? ImportAIError, let d = ie.errorDescription {
+            return "AI: ошибка сопоставления\n\n" + d
+        }
+        let ns = error as NSError
+        var parts: [String] = [error.localizedDescription]
+        if let sub = ns.userInfo[NSLocalizedFailureReasonErrorKey] as? String, !sub.isEmpty {
+            parts.append("Причина: " + sub)
+        }
+        if let det = ns.userInfo[NSDebugDescriptionErrorKey] as? String, !det.isEmpty {
+            parts.append("Деталь: " + det)
+        }
+        if let ur = error as? URLError {
+            parts.append("Сеть: код \(ur.errorCode), \(ur.localizedDescription)")
+        }
+        return "AI: ошибка\n\n" + parts.joined(separator: "\n\n")
+    }
+
+    @MainActor
+    private func applyAIResolution(_ r: ImportAIResolution, brands: [Brand]) {
+        var lowConfidenceSheets: [String] = []
+        for d in r.sheets {
+            guard let idx = indexOfConfig(matchingSheetName: d.sheet_name) else { continue }
+            var c = sheetConfigs[idx]
+            let confidence = d.confidence ?? 1.0
+            if confidence < 0.6 {
+                lowConfidenceSheets.append(c.sheetName)
+            }
+            switch d.import_type.lowercased() {
+            case "engines":  c.importType = .engines
+            case "specific": c.importType = .specific
+            case "skip":     c.importType = .skip
+            default:         break
+            }
+            if c.importType == .specific, let cat = d.category_name?.trimmingCharacters(in: .whitespacesAndNewlines), !cat.isEmpty {
+                c.categoryName = cat
+            }
+            if c.importType == .engines {
+                if let bn = d.brand_name?.trimmingCharacters(in: .whitespacesAndNewlines), !bn.isEmpty {
+                    if let b = brands.first(where: { $0.name.caseInsensitiveCompare(bn) == .orderedSame }) {
+                        c.selectedBrandID = b.id
+                        c.customBrand = ""
+                    } else {
+                        c.selectedBrandID = nil
+                        c.customBrand = bn
+                    }
+                }
+                if let ec = d.engine_code?.trimmingCharacters(in: .whitespacesAndNewlines), !ec.isEmpty {
+                    c.customEngineCode = ImportNormalization.normalizeEngineCode(ec)
+                }
+            }
+            sheetConfigs[idx] = c
+
+            guard let sheet = rawSheetData.first(where: { $0.name == c.sheetName }) else { continue }
+            var mapping = createAutoColumnMapping(for: sheet, sheetID: c.id, importType: c.importType)
+            if c.importType == .engines, let roles = d.column_roles {
+                applyAIRoles(roles, to: &mapping)
+            }
+            if c.importType == .engines {
+                ensureSoldDateMapping(
+                    for: sheet,
+                    mapping: &mapping,
+                    fallbackDateColumns: d.fallback_date_columns,
+                    soldSheetHint: d.detected_sold_sheet ?? isLikelySoldSheetName(c.sheetName)
+                )
+            }
+            columnMappings[c.id] = mapping
+        }
+        if !lowConfidenceSheets.isEmpty {
+            let joined = lowConfidenceSheets.joined(separator: ", ")
+            let warning = "\nAI: Низкая уверенность по листам: \(joined)."
+            aiMappingNotes = (aiMappingNotes ?? "") + warning
+        }
+    }
+
+    private func indexOfConfig(matchingSheetName name: String) -> Int? {
+        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let i = sheetConfigs.firstIndex(where: { $0.sheetName == t }) { return i }
+        return sheetConfigs.firstIndex { $0.sheetName.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(t) == .orderedSame }
+    }
+
+    private func applyAIRoles(_ roles: [String: String], to mapping: inout SheetColumnMapping) {
+        for (key, roleRaw) in roles {
+            guard let col = Int(key), let field = engineFieldFromAIRole(roleRaw) else { continue }
+            guard let i = mapping.columnMappings.firstIndex(where: { $0.columnIndex == col }) else { continue }
+            mapping.columnMappings[i].engineFieldMapping = field
+            if field != .ignore {
+                mapping.columnMappings[i].customFieldName = nil
+            }
+        }
+    }
+
+    private func engineFieldFromAIRole(_ raw: String) -> EngineFieldMapping? {
+        let r = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch r {
+        case "serial", "serial_code", "number", "vin", "мотор", "серий", "двигатель":
+            return .serialCode
+        case "configuration", "комплектация", "комплект":
+            return .configuration
+        case "notes", "примеч", "замет", "отмет":
+            return .notes
+        case "quantity", "qty", "кол", "шт", "кол-во":
+            return .quantity
+        case "transmission", "кпп", "короб", "трансмис":
+            return .transmission
+        case "arrival", "arrival_date", "приход", "поступ":
+            return .arrivalDate
+        case "sold", "sold_date", "продаж", "дата_продаж", "date_sold", "цена", "price", "сумма":
+            // Проданные: даты и деньги в одном и том же import engines — дата в soldDate; сумму часто суют в notes, если нет поля
+            if r == "цена" || r == "price" || r == "сумма" {
+                return .notes
+            }
+            return .soldDate
+        case "ignore", "none", "skip", "":
+            return .ignore
+        default:
+            if r.contains("sold") || r.contains("продаж") { return .soldDate }
+            if r.contains("приход") { return .arrivalDate }
+            if r.contains("серий") || r == "№" { return .serialCode }
+            return nil
+        }
+    }
+
+    private func ensureSoldDateMapping(
+        for sheet: ImportSheetData,
+        mapping: inout SheetColumnMapping,
+        fallbackDateColumns: [Int]?,
+        soldSheetHint: Bool
+    ) {
+        guard soldSheetHint else { return }
+        if mapping.columnMappings.contains(where: { $0.engineFieldMapping == .soldDate }) {
+            return
+        }
+        if let preferred = fallbackDateColumns {
+            for index in preferred {
+                guard let mappingIndex = mapping.columnMappings.firstIndex(where: { $0.columnIndex == index }) else { continue }
+                let candidate = mapping.columnMappings[mappingIndex]
+                if hasDateLikePreview(candidate.previewValues) {
+                    mapping.columnMappings[mappingIndex].engineFieldMapping = .soldDate
+                    return
+                }
+            }
+        }
+        if let fallbackIndex = detectFallbackSoldDateColumn(in: mapping) {
+            mapping.columnMappings[fallbackIndex].engineFieldMapping = .soldDate
+        }
+    }
+
+    private func detectFallbackSoldDateColumn(in mapping: SheetColumnMapping) -> Int? {
+        let preferredWords = ["продаж", "sold", "sale", "дата", "date", "реализ"]
+        for (index, column) in mapping.columnMappings.enumerated() {
+            guard column.engineFieldMapping == nil || column.engineFieldMapping == .ignore else { continue }
+            let header = ImportNormalization.normalizeHeader(column.headerValue ?? "")
+            if preferredWords.contains(where: { header.contains($0) }) && hasDateLikePreview(column.previewValues) {
+                return index
+            }
+        }
+        return mapping.columnMappings.firstIndex(where: { column in
+            (column.engineFieldMapping == nil || column.engineFieldMapping == .ignore) &&
+            hasDateLikePreview(column.previewValues)
+        })
+    }
+
+    private func hasDateLikePreview(_ values: [String]) -> Bool {
+        guard !values.isEmpty else { return false }
+        var matches = 0
+        for v in values.prefix(5) {
+            let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { continue }
+            if ImportNormalization.parseDateString(t) != nil {
+                matches += 1
+                continue
+            }
+            if let n = Double(t), ImportNormalization.dateFromExcelSerial(n) != nil {
+                matches += 1
+            }
+        }
+        return matches >= 1
+    }
+
+    private func isLikelySoldSheetName(_ name: String) -> Bool {
+        let n = ImportNormalization.normalizeHeader(name)
+        return n.contains("продан") || n.contains("продажи") || n.contains("sold") || n.contains("sales")
     }
     
     // Создает автоматический маппинг колонок на основе заголовков
@@ -292,7 +529,7 @@ final class ImportViewModel: ObservableObject {
     func canProceedToNextStep() -> Bool {
         switch currentStep {
         case .analyze:
-            return !sheetConfigs.isEmpty
+            return !sheetConfigs.isEmpty && !isAIMapping
         case .selectType:
             // Все листы должны иметь выбранный тип
             // Для специфичных листов должна быть задана категория
@@ -417,6 +654,15 @@ final class ImportViewModel: ObservableObject {
         guard let serialMapping = mapping.columnMappings.first(where: { $0.engineFieldMapping == .serialCode }) else {
             return []
         }
+        let soldSheetHint = isLikelySoldSheetName(sheet.name)
+        let soldDateColumn = mapping.columnMappings.first(where: { $0.engineFieldMapping == .soldDate })?.columnIndex
+        let arrivalDateColumn = mapping.columnMappings.first(where: { $0.engineFieldMapping == .arrivalDate })?.columnIndex
+        let fallbackSoldColumn: Int? = {
+            if soldDateColumn != nil { return nil }
+            guard soldSheetHint else { return nil }
+            guard let idx = detectFallbackSoldDateColumn(in: mapping) else { return nil }
+            return mapping.columnMappings[idx].columnIndex
+        }()
         
         let dataStartIndex = (mapping.headerRowIndex ?? -1) + 1
         var rows: [ImportRow] = []
@@ -433,8 +679,17 @@ final class ImportViewModel: ObservableObject {
             let notes = getOptionalStringValue(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .notes })?.columnIndex)
             let quantity = getOptionalStringValue(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .quantity })?.columnIndex)
             let transmission = getOptionalStringValue(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .transmission })?.columnIndex)
-            let arrivalDate = getOptionalStringValue(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .arrivalDate })?.columnIndex)
-            let soldDate = getOptionalStringValue(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .soldDate })?.columnIndex)
+            let arrivalDateRaw = getOptionalStringValue(from: row, at: arrivalDateColumn)
+            let soldDateRaw = getOptionalStringValue(from: row, at: soldDateColumn)
+            let fallbackSoldRaw = getOptionalStringValue(from: row, at: fallbackSoldColumn)
+            let arrivalDate = parseDate(from: arrivalDateRaw ?? "")
+            var soldDate = parseDate(from: soldDateRaw ?? "")
+            if soldDate == nil {
+                soldDate = parseDate(from: fallbackSoldRaw ?? "")
+            }
+            if soldDate == nil && soldSheetHint {
+                soldDate = arrivalDate ?? ImportNormalization.normalizeToLocalCalendarDay(Date())
+            }
             
             rows.append(ImportRow(
                 serialCode: serialCode,
@@ -442,8 +697,8 @@ final class ImportViewModel: ObservableObject {
                 notes: notes?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? "",
                 quantity: parseQuantity(from: quantity ?? ""),
                 transmission: transmission?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? "",
-                arrivalDate: parseDate(from: arrivalDate ?? ""),
-                soldDate: parseDate(from: soldDate ?? "")
+                arrivalDate: arrivalDate,
+                soldDate: soldDate
             ))
         }
         
@@ -454,13 +709,23 @@ final class ImportViewModel: ObservableObject {
     func buildSpecificRows(for sheet: ImportSheetData, mapping: SheetColumnMapping) -> [[String: String]] {
         let dataStartIndex = (mapping.headerRowIndex ?? -1) + 1
         var rows: [[String: String]] = []
-        
+
+        let orderedFieldNames: [String] = mapping.columnMappings.compactMap { columnMapping in
+            guard let fieldName = columnMapping.customFieldName else { return nil }
+            let trimmed = fieldName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let columnOrderJSON = (try? String(
+            data: JSONSerialization.data(withJSONObject: orderedFieldNames),
+            encoding: .utf8
+        )) ?? ""
+
         for (rowIndex, row) in sheet.rows.enumerated() {
             if rowIndex < dataStartIndex { continue }
-            
+
             var rowData: [String: String] = [:]
             var hasData = false
-            
+
             for columnMapping in mapping.columnMappings {
                 if let fieldName = columnMapping.customFieldName, !fieldName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
                     let value = getStringValue(from: row, at: columnMapping.columnIndex)
@@ -470,12 +735,15 @@ final class ImportViewModel: ObservableObject {
                     }
                 }
             }
-            
+
             if hasData {
+                if !columnOrderJSON.isEmpty {
+                    rowData["_columnOrder"] = columnOrderJSON
+                }
                 rows.append(rowData)
             }
         }
-        
+
         return rows
     }
     
@@ -501,10 +769,13 @@ final class ImportViewModel: ObservableObject {
     private func parseDate(from value: String) -> Date? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        let raw: Date?
         if let number = Double(trimmed) {
-            return ImportNormalization.dateFromExcelSerial(number)
+            raw = ImportNormalization.dateFromExcelSerial(number)
+        } else {
+            raw = ImportNormalization.parseDateString(trimmed)
         }
-        return ImportNormalization.parseDateString(trimmed)
+        return raw.map { ImportNormalization.normalizeToLocalCalendarDay($0) }
     }
     
     func commitImport(database: DatabaseService, backupService: BackupService?) async throws -> Int {
@@ -642,6 +913,15 @@ final class ImportViewModel: ObservableObject {
         guard let serialMapping = mapping.columnMappings.first(where: { $0.engineFieldMapping == .serialCode }) else {
             return []
         }
+        let soldSheetHint = isLikelySoldSheetNameStatic(sheet.name)
+        let soldDateColumn = mapping.columnMappings.first(where: { $0.engineFieldMapping == .soldDate })?.columnIndex
+        let arrivalDateColumn = mapping.columnMappings.first(where: { $0.engineFieldMapping == .arrivalDate })?.columnIndex
+        let fallbackSoldColumn: Int? = {
+            if soldDateColumn != nil { return nil }
+            guard soldSheetHint else { return nil }
+            guard let idx = detectFallbackSoldDateColumnStatic(in: mapping) else { return nil }
+            return mapping.columnMappings[idx].columnIndex
+        }()
         
         let dataStartIndex = (mapping.headerRowIndex ?? -1) + 1
         var rows: [ImportRow] = []
@@ -658,8 +938,17 @@ final class ImportViewModel: ObservableObject {
             let notes = getStringValueStatic(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .notes })?.columnIndex)
             let quantity = getStringValueStatic(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .quantity })?.columnIndex)
             let transmission = getStringValueStatic(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .transmission })?.columnIndex)
-            let arrivalDate = getStringValueStatic(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .arrivalDate })?.columnIndex)
-            let soldDate = getStringValueStatic(from: row, at: mapping.columnMappings.first(where: { $0.engineFieldMapping == .soldDate })?.columnIndex)
+            let arrivalDateRaw = getStringValueStatic(from: row, at: arrivalDateColumn)
+            let soldDateRaw = getStringValueStatic(from: row, at: soldDateColumn)
+            let fallbackSoldRaw = getStringValueStatic(from: row, at: fallbackSoldColumn)
+            let arrivalDate = parseDate(from: arrivalDateRaw)
+            var soldDate = parseDate(from: soldDateRaw)
+            if soldDate == nil {
+                soldDate = parseDate(from: fallbackSoldRaw)
+            }
+            if soldDate == nil && soldSheetHint {
+                soldDate = arrivalDate ?? ImportNormalization.normalizeToLocalCalendarDay(Date())
+            }
             
             rows.append(ImportRow(
                 serialCode: serialCode,
@@ -667,12 +956,49 @@ final class ImportViewModel: ObservableObject {
                 notes: notes.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
                 quantity: parseQuantity(from: quantity),
                 transmission: transmission.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
-                arrivalDate: parseDate(from: arrivalDate),
-                soldDate: parseDate(from: soldDate)
+                arrivalDate: arrivalDate,
+                soldDate: soldDate
             ))
         }
         
         return rows
+    }
+
+    nonisolated private static func detectFallbackSoldDateColumnStatic(in mapping: SheetColumnMapping) -> Int? {
+        let preferredWords = ["продаж", "sold", "sale", "дата", "date", "реализ"]
+        for (index, column) in mapping.columnMappings.enumerated() {
+            guard column.engineFieldMapping == nil || column.engineFieldMapping == .ignore else { continue }
+            let header = ImportNormalization.normalizeHeader(column.headerValue ?? "")
+            if preferredWords.contains(where: { header.contains($0) }) && hasDateLikePreviewStatic(column.previewValues) {
+                return index
+            }
+        }
+        return mapping.columnMappings.firstIndex(where: { column in
+            (column.engineFieldMapping == nil || column.engineFieldMapping == .ignore) &&
+            hasDateLikePreviewStatic(column.previewValues)
+        })
+    }
+
+    nonisolated private static func hasDateLikePreviewStatic(_ values: [String]) -> Bool {
+        guard !values.isEmpty else { return false }
+        var matches = 0
+        for v in values.prefix(5) {
+            let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { continue }
+            if ImportNormalization.parseDateString(t) != nil {
+                matches += 1
+                continue
+            }
+            if let n = Double(t), ImportNormalization.dateFromExcelSerial(n) != nil {
+                matches += 1
+            }
+        }
+        return matches >= 1
+    }
+
+    nonisolated private static func isLikelySoldSheetNameStatic(_ name: String) -> Bool {
+        let n = ImportNormalization.normalizeHeader(name)
+        return n.contains("продан") || n.contains("продажи") || n.contains("sold") || n.contains("sales")
     }
     
     nonisolated private static func getStringValueStatic(from row: [String], at index: Int?) -> String {
@@ -691,10 +1017,13 @@ final class ImportViewModel: ObservableObject {
     nonisolated private static func parseDate(from value: String) -> Date? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        let raw: Date?
         if let number = Double(trimmed) {
-            return ImportNormalization.dateFromExcelSerial(number)
+            raw = ImportNormalization.dateFromExcelSerial(number)
+        } else {
+            raw = ImportNormalization.parseDateString(trimmed)
         }
-        return ImportNormalization.parseDateString(trimmed)
+        return raw.map { ImportNormalization.normalizeToLocalCalendarDay($0) }
     }
     
     nonisolated private static func importSpecificSheet(
@@ -757,13 +1086,23 @@ final class ImportViewModel: ObservableObject {
     nonisolated private static func buildSpecificRows(for sheet: ImportSheetData, mapping: SheetColumnMapping) -> [[String: String]] {
         let dataStartIndex = (mapping.headerRowIndex ?? -1) + 1
         var rows: [[String: String]] = []
-        
+
+        let orderedFieldNames: [String] = mapping.columnMappings.compactMap { columnMapping in
+            guard let fieldName = columnMapping.customFieldName else { return nil }
+            let trimmed = fieldName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let columnOrderJSON = (try? String(
+            data: JSONSerialization.data(withJSONObject: orderedFieldNames),
+            encoding: .utf8
+        )) ?? ""
+
         for (rowIndex, row) in sheet.rows.enumerated() {
             if rowIndex < dataStartIndex { continue }
-            
+
             var rowData: [String: String] = [:]
             var hasData = false
-            
+
             for columnMapping in mapping.columnMappings {
                 if let fieldName = columnMapping.customFieldName, !fieldName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
                     let value = getStringValueStatic(from: row, at: columnMapping.columnIndex)
@@ -773,12 +1112,15 @@ final class ImportViewModel: ObservableObject {
                     }
                 }
             }
-            
+
             if hasData {
+                if !columnOrderJSON.isEmpty {
+                    rowData["_columnOrder"] = columnOrderJSON
+                }
                 rows.append(rowData)
             }
         }
-        
+
         return rows
     }
     

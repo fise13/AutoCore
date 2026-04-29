@@ -1,11 +1,6 @@
-//
-//  InvoiceModels.swift
-//  AutoCore
-//
-//  Модели для сканирования накладных (OCR).
-//
-
 import Foundation
+
+// MARK: - Shared invoice models (iOS + macOS)
 
 enum InvoiceDocumentType: String, CaseIterable, Identifiable, Codable {
     case income
@@ -15,7 +10,7 @@ enum InvoiceDocumentType: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .income: return "Приход"
+        case .income:  return "Приход"
         case .expense: return "Расход"
         }
     }
@@ -30,35 +25,30 @@ enum InvoiceDocumentKind: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .workOrder: return "Заказ-наряд"
-        case .invoice: return "Накладная"
+        case .invoice:   return "Накладная"
         }
     }
 
     var suggestedType: InvoiceDocumentType {
         switch self {
         case .workOrder: return .income
-        case .invoice: return .expense
+        case .invoice:   return .expense
         }
     }
 }
 
-/// Строка накладной: название, количество, цена.
+/// A single line item on a scanned invoice.
 struct InvoiceItem: Identifiable, Equatable {
     var id: String {
-        "\(name)-\(quantity)-\(price)-\(motorSerial ?? "")-\(selectedMotorLocalId ?? -1)-\(selectedMotorCloudId ?? "")"
+        "\(name)-\(quantity)-\(price)"
     }
     var name: String
     var quantity: Decimal
     var price: Decimal
-    var motorSerial: String? = nil
-    var selectedMotorLocalId: Int64? = nil
-    var selectedMotorCloudId: String? = nil
-    var selectedMotorSerial: String? = nil
-    
     var total: Decimal { quantity * price }
 }
 
-/// Результат сканирования накладной.
+/// Result of AI invoice scanning.
 struct ScannedInvoice: Identifiable {
     let id: String
     var scannedAt: Date
@@ -69,11 +59,11 @@ struct ScannedInvoice: Identifiable {
     var rawText: String?
     var aiWarnings: [String]
     var aiConfidence: Double?
-    
+
     var totalAmount: Decimal {
         items.reduce(0) { $0 + $1.total }
     }
-    
+
     init(
         id: String = UUID().uuidString,
         scannedAt: Date = Date(),
@@ -85,14 +75,14 @@ struct ScannedInvoice: Identifiable {
         aiWarnings: [String] = [],
         aiConfidence: Double? = nil
     ) {
-        self.id = id
-        self.scannedAt = scannedAt
-        self.type = type
-        self.documentKind = documentKind
-        self.counterparty = counterparty
-        self.items = items
-        self.rawText = rawText
-        self.aiWarnings = aiWarnings
-        self.aiConfidence = aiConfidence
+        self.id            = id
+        self.scannedAt     = scannedAt
+        self.type          = type
+        self.documentKind  = documentKind
+        self.counterparty  = counterparty
+        self.items         = items
+        self.rawText       = rawText
+        self.aiWarnings    = aiWarnings
+        self.aiConfidence  = aiConfidence
     }
 }

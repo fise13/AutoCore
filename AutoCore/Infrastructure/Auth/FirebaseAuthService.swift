@@ -34,7 +34,7 @@ final class FirebaseAuthService: AuthService {
             if let user = self.currentUser {
                 continuation.yield(.authenticated(user))
             } else if let firebaseUser = self.auth.currentUser {
-                continuation.yield(.authenticating)
+                continuation.yield(.loading)
                 Task {
                     do {
                         _ = try await self.loadUserEntity(for: firebaseUser)
@@ -106,10 +106,12 @@ final class FirebaseAuthService: AuthService {
     // MARK: - Google
     
     func signInWithGoogle() async throws -> UserEntity {
-        #if os(iOS)
-        guard let clientID = FirebaseApp.app()?.options.clientID else {
-            throw AuthError.unknown("Не найден Firebase Client ID")
+        let resolvedClientID = resolveGoogleClientID()
+        guard let clientID = resolvedClientID, !clientID.isEmpty else {
+            logger.error("Google Sign In: missing CLIENT_ID in Firebase options and GoogleService-Info.plist", correlationID: nil)
+            throw AuthError.unknown("Google вход не настроен: отсутствует CLIENT_ID в GoogleService-Info.plist для основного таргета.")
         }
+        #if os(iOS)
         let config = GIDConfiguration(clientID: clientID)
         GIDSignIn.sharedInstance.configuration = config
 
@@ -133,16 +135,18 @@ final class FirebaseAuthService: AuthService {
         let authResult = try await auth.signIn(with: credential)
         return try await loadUserEntity(for: authResult.user)
         #elseif os(macOS)
-        guard let clientID = FirebaseApp.app()?.options.clientID else {
-            throw AuthError.unknown("Не найден Firebase Client ID")
-        }
         let config = GIDConfiguration(clientID: clientID)
         GIDSignIn.sharedInstance.configuration = config
 
-        guard let window = NSApplication.shared.keyWindow
-            ?? NSApplication.shared.windows.first(where: { $0.isKeyWindow })
-            ?? NSApplication.shared.windows.first(where: { $0.isVisible }) else {
-            throw AuthError.unknown("Не удалось получить окно приложения")
+        // Try several sources for a presentable window
+        let window: NSWindow? = await MainActor.run {
+            NSApplication.shared.keyWindow
+                ?? NSApplication.shared.mainWindow
+                ?? NSApplication.shared.windows.first(where: { $0.isVisible && !$0.isMiniaturized })
+                ?? NSApplication.shared.windows.first
+        }
+        guard let window else {
+            throw AuthError.unknown("Не удалось получить окно приложения для входа через Google")
         }
 
         let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: window)
@@ -225,6 +229,41 @@ final class FirebaseAuthService: AuthService {
         authStateContinuation?.yield(.unauthenticated)
     }
     
+    // MARK: - Password
+    
+    func changePassword(currentPassword: String, newPassword: String) async throws {
+        guard let user = auth.currentUser else { throw AuthError.userNotFound }
+        guard let email = user.email, !email.isEmpty else {
+            throw AuthError.unknown("Изменить пароль можно только для аккаунта с электронной почтой.")
+        }
+        let isEmailProvider = user.providerData.contains { $0.providerID == "password" }
+        guard isEmailProvider else {
+            throw AuthError.unknown("Этот аккаунт привязан к Google или Apple. Меняйте пароль в настройках соответствующего сервиса.")
+        }
+        guard newPassword.count >= 6 else {
+            throw AuthError.weakPassword
+        }
+        do {
+            let credential = EmailAuthProvider.credential(withEmail: email, password: currentPassword)
+            try await user.reauthenticate(with: credential)
+            try await user.updatePassword(to: newPassword)
+        } catch {
+            throw mapAuthError(error)
+        }
+    }
+    
+    func sendPasswordReset(email: String) async throws {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AuthError.invalidCredentials
+        }
+        do {
+            try await auth.sendPasswordReset(withEmail: trimmed)
+        } catch {
+            throw mapAuthError(error)
+        }
+    }
+    
     // MARK: - Sign out
     
     func signOut() throws {
@@ -301,13 +340,25 @@ final class FirebaseAuthService: AuthService {
             id: user.uid,
             email: userDoc.email,
             displayName: userDoc.name.isEmpty ? nil : userDoc.name,
-            provider: .apple,
+            provider: detectProvider(from: user),
             role: userDoc.role,
             companyId: userDoc.companyId ?? ""
         )
         currentUser = entity
         authStateContinuation?.yield(.authenticated(entity))
         return entity
+    }
+    
+    private func detectProvider(from user: FirebaseAuth.User) -> AuthProvider {
+        for info in user.providerData {
+            switch info.providerID {
+            case "google.com": return .google
+            case "apple.com": return .apple
+            case "password": return .email
+            default: continue
+            }
+        }
+        return .email
     }
 
     private func findOwnedCompanyId(for userId: String) async throws -> String? {
@@ -320,6 +371,7 @@ final class FirebaseAuthService: AuthService {
     
     private func handleAuthStateChange(user: FirebaseAuth.User?) async {
         if let user {
+            authStateContinuation?.yield(.loading)
             do {
                 _ = try await loadUserEntity(for: user)
             } catch {
@@ -333,6 +385,14 @@ final class FirebaseAuthService: AuthService {
     }
     
     private func mapAuthError(_ error: Error) -> AuthError {
+        if let gidError = error as? GIDSignInError {
+            switch gidError.code {
+            case .canceled:
+                return .cancelled
+            default:
+                return .unknown(gidError.localizedDescription)
+            }
+        }
         let nsError = error as NSError
         guard nsError.domain == AuthErrorDomain,
               let code = AuthErrorCode(rawValue: nsError.code) else {
@@ -366,6 +426,22 @@ final class FirebaseAuthService: AuthService {
         default:
             return .unknown(error.localizedDescription)
         }
+    }
+
+    private func resolveGoogleClientID() -> String? {
+        if let fromFirebase = FirebaseApp.app()?.options.clientID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !fromFirebase.isEmpty {
+            return fromFirebase
+        }
+
+        if let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+           let plist = NSDictionary(contentsOfFile: path),
+           let fromPlist = (plist["CLIENT_ID"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !fromPlist.isEmpty {
+            return fromPlist
+        }
+
+        return nil
     }
 }
 

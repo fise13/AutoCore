@@ -427,7 +427,7 @@ final class BackupManagementViewModel: ObservableObject {
             defer { isLoading = false }
             
             do {
-                backups = try listBackupsUseCase.execute()
+                backups = try await loadBackupsInBackground()
             } catch {
                 print("Failed to load backups: \(error)")
             }
@@ -475,5 +475,12 @@ final class BackupManagementViewModel: ObservableObject {
             throw BackupError.unableToCreateArchive
         }
         return try localRepo.getBackupsDirectory()
+    }
+
+    private func loadBackupsInBackground() async throws -> [BackupEntity] {
+        let backupRepository = self.backupRepository
+        return try await Task.detached(priority: .userInitiated) {
+            try backupRepository.findAll()
+        }.value
     }
 }

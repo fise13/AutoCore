@@ -2,85 +2,105 @@
 
 import AppKit
 
-final class EditorOverlayController: NSObject, NSTextFieldDelegate {
+@MainActor
+final class EditorOverlayController: NSObject {
     private weak var hostView: NSView?
-    private let field: NSTextField
+    private let scroll: NSScrollView
+    private let textView: GridCellEditingTextView
     private(set) var address: GridCellAddress?
+
     var onCommit: ((GridCellAddress, String) -> Void)?
     var onCancel: (() -> Void)?
-    var onNavigate: ((Bool) -> Void)?
-    var isEditing: Bool { address != nil && !field.isHidden }
+    var onUserMovedAfterCommit: ((MoveAfterCommit) -> Void)?
+
+    enum MoveAfterCommit {
+        case down, up, tab, backTab
+    }
+
+    var isEditing: Bool { address != nil && !textView.isHidden }
 
     override init() {
-        field = NSTextField(string: "")
+        scroll = NSScrollView(frame: .zero)
+        textView = GridCellEditingTextView(frame: .zero)
         super.init()
-        field.isEditable = true
-        field.isBordered = true
-        field.drawsBackground = true
-        field.font = NSFont.systemFont(ofSize: 11)
-        field.delegate = self
-        field.cell?.sendsActionOnEndEditing = false
+        scroll.translatesAutoresizingMaskIntoConstraints = true
+        scroll.drawsBackground = true
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.documentView = textView
+        textView.isEditable = true
+        textView.isRichText = false
+        textView.font = NSFont.systemFont(ofSize: 11)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.textContainer?.heightTracksTextView = true
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 4
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.wantsLayer = true
+        textView.layer?.borderWidth = 1
+        textView.onUserReturn = { [weak self] in self?.finishCommitThen(.down) }
+        textView.onUserShiftReturn = { [weak self] in self?.finishCommitThen(.up) }
+        textView.onUserTab = { [weak self] in self?.finishCommitThen(.tab) }
+        textView.onUserBackTab = { [weak self] in self?.finishCommitThen(.backTab) }
+        textView.onUserCancel = { [weak self] in
+            self?.endEditing(commit: false)
+        }
     }
 
     func attach(host: NSView) {
         self.hostView = host
-        if field.superview !== host {
-            field.removeFromSuperview()
-            host.addSubview(field)
+        if scroll.superview !== host {
+            scroll.removeFromSuperview()
+            host.addSubview(scroll)
         }
-        field.isHidden = true
+        scroll.isHidden = true
     }
 
     func beginEdit(address: GridCellAddress, frame: CGRect, text: String, selectAll: Bool = true) {
         self.address = address
-        field.frame = frame.insetBy(dx: 1, dy: 1)
-        field.stringValue = text
-        field.isHidden = false
-        hostView?.window?.makeFirstResponder(field)
+        scroll.frame = frame.insetBy(dx: 0.5, dy: 0.5)
+        textView.string = text
+        textView.layer?.borderColor = NSColor.separatorColor.cgColor
+        let innerW = max(1, frame.width - 2)
+        textView.minSize = NSSize(width: innerW, height: 0)
+        textView.maxSize = NSSize(width: innerW, height: 400)
+        textView.isHidden = false
+        scroll.isHidden = false
+        hostView?.window?.makeFirstResponder(textView)
         if selectAll {
-            field.currentEditor()?.selectAll(nil)
+            textView.selectAll(nil)
         } else {
-            if let editor = field.currentEditor() {
-                editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
-            }
+            textView.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
         }
     }
 
     func endEditing(commit: Bool) {
         guard let addr = address else {
-            field.isHidden = true
+            textView.isHidden = true
+            scroll.isHidden = true
             return
         }
         if commit {
-            onCommit?(addr, field.stringValue)
+            onCommit?(addr, textView.string)
         } else {
             onCancel?()
         }
-        field.isHidden = true
+        textView.isHidden = true
+        scroll.isHidden = true
+        self.address = nil
+    }
+
+    private func finishCommitThen(_ move: MoveAfterCommit) {
+        guard let addr = address else { return }
+        let t = textView.string
+        onCommit?(addr, t)
+        textView.isHidden = true
+        scroll.isHidden = true
         address = nil
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            endEditing(commit: true)
-            onNavigate?(false)
-            return true
-        }
-        if commandSelector == #selector(NSResponder.insertTab(_:)) {
-            endEditing(commit: true)
-            onNavigate?(true)
-            return true
-        }
-        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            endEditing(commit: false)
-            return true
-        }
-        return false
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        if field.isHidden { return }
-        endEditing(commit: true)
+        onUserMovedAfterCommit?(move)
     }
 }
 

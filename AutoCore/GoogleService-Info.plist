@@ -10,6 +10,10 @@
 	<string>1</string>
 	<key>BUNDLE_ID</key>
 	<string>fise.AutoCore</string>
+	<key>CLIENT_ID</key>
+	<string>655118555215-0bg872jah57iusp8q7tq3sab9enhlj48.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.655118555215-0bg872jah57iusp8q7tq3sab9enhlj48</string>
 	<key>PROJECT_ID</key>
 	<string>autocore-6066c</string>
 	<key>STORAGE_BUCKET</key>

@@ -51,6 +51,7 @@ enum AuthError: Error, Equatable {
 
 /// Состояние аутентификации
 enum AuthState: Equatable {
+    case loading
     case unauthenticated
     case authenticating
     case authenticated(UserEntity)
@@ -101,6 +102,15 @@ protocol AuthService: AnyObject {
     /// Удалить аккаунт пользователя (Firestore users/{uid} + Firebase Auth). Требуется недавний вход.
     func deleteAccount() async throws
     
+    /// Изменить пароль текущего email-аккаунта.
+    /// - Parameters:
+    ///   - currentPassword: текущий пароль (для повторной аутентификации)
+    ///   - newPassword: новый пароль (минимум 6 символов)
+    func changePassword(currentPassword: String, newPassword: String) async throws
+    
+    /// Отправить письмо для сброса пароля на указанный email.
+    func sendPasswordReset(email: String) async throws
+    
     /// Выход из системы
     func signOut() throws
 }
@@ -128,5 +138,13 @@ extension AuthService {
     
     func deleteAccount() async throws {
         throw AuthError.unknown("Удаление аккаунта недоступно")
+    }
+    
+    func changePassword(currentPassword: String, newPassword: String) async throws {
+        throw AuthError.unknown("Смена пароля доступна только для входа по электронной почте")
+    }
+    
+    func sendPasswordReset(email: String) async throws {
+        throw AuthError.unknown("Сброс пароля недоступен")
     }
 }

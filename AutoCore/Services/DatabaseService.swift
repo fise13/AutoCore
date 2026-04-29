@@ -17,11 +17,35 @@ nonisolated final class DatabaseService {
     private let queue = DispatchQueue(label: "AutoCore.DatabaseQueue")
     private var db: OpaquePointer?
     private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    private let dateFormatter: ISO8601DateFormatter = {
+    /// Метки времени created_at / updated_at и т.п. (полный ISO, UTC).
+    private let isoTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
+    /// Календарные дни мотора/сервиса: только дата в **локальной** зоне (без сдвига «на день» из-за ISO UTC).
+    private let motorCalendarDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private func formatMotorStorageDate(_ date: Date) -> String {
+        motorCalendarDateFormatter.string(from: ImportNormalization.normalizeToLocalCalendarDay(date))
+    }
+
+    private func parseMotorStorageDate(_ string: String?) -> Date? {
+        guard let raw = string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if let d = motorCalendarDateFormatter.date(from: raw) { return d }
+        if let d = isoTimestampFormatter.date(from: raw) {
+            return ImportNormalization.normalizeToLocalCalendarDay(d)
+        }
+        return nil
+    }
 
     /// Флаг read-only режима (Recovery Mode)
     private(set) var isReadOnly: Bool = false
@@ -185,13 +209,13 @@ nonisolated final class DatabaseService {
         sql += ";"
 
         return try query(sql: sql, bindings: bindings) { statement in
-            let arrivalDate = dateFormatter.date(from: stringColumn(statement, index: 7)) ?? Date()
+            let arrivalDate = parseMotorStorageDate(stringColumn(statement, index: 7)) ?? Date()
             let soldDateString = optionalStringColumn(statement, index: 8)
-            let soldDate = soldDateString.flatMap { dateFormatter.date(from: $0) }
+            let soldDate = parseMotorStorageDate(soldDateString)
             let deletedAtString = optionalStringColumn(statement, index: 9)
-            let deletedAt = deletedAtString.flatMap { dateFormatter.date(from: $0) }
-            let createdAt = dateFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
-            let updatedAt = dateFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
+            let deletedAt = parseMotorStorageDate(deletedAtString)
+            let createdAt = isoTimestampFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
+            let updatedAt = isoTimestampFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
             return Motor(
                 id: sqlite3_column_int64(statement, 0),
                 engineID: sqlite3_column_int64(statement, 1),
@@ -401,12 +425,12 @@ nonisolated final class DatabaseService {
         deletedAt: Date? = nil,
         companyId: String = "default"
     ) throws -> Int64 {
-        let createdAt = dateFormatter.string(from: Date())
+        let createdAt = isoTimestampFormatter.string(from: Date())
         let updatedAt = createdAt
         let arrivalValue = arrivalDate ?? Date()
-        let arrivalString = dateFormatter.string(from: arrivalValue)
-        let soldString = soldDate.map { dateFormatter.string(from: $0) }
-        let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
+        let arrivalString = formatMotorStorageDate(arrivalValue)
+        let soldString = soldDate.map { formatMotorStorageDate($0) }
+        let deletedString = deletedAt.map { formatMotorStorageDate($0) }
         let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         // Серийный номер уникален, поэтому применяем upsert.
         try executeUnlocked(
@@ -483,10 +507,10 @@ nonisolated final class DatabaseService {
     ) throws {
         try assertNotReadOnly()
         try inTransaction {
-            let updatedAt = dateFormatter.string(from: Date())
-            let arrivalString = dateFormatter.string(from: arrivalDate)
-            let soldString = soldDate.map { dateFormatter.string(from: $0) }
-            let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
+            let updatedAt = isoTimestampFormatter.string(from: Date())
+            let arrivalString = formatMotorStorageDate(arrivalDate)
+            let soldString = soldDate.map { formatMotorStorageDate($0) }
+            let deletedString = deletedAt.map { formatMotorStorageDate($0) }
             try executeUnlocked(
                 sql: """
                 UPDATE motors
@@ -520,7 +544,7 @@ nonisolated final class DatabaseService {
         let trimmed = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         try inTransaction {
-            let updatedAt = dateFormatter.string(from: Date())
+            let updatedAt = isoTimestampFormatter.string(from: Date())
             try executeUnlocked(
                 sql: """
                 UPDATE motors
@@ -546,10 +570,10 @@ nonisolated final class DatabaseService {
         soldDate: Date?,
         deletedAt: Date? = nil
     ) throws {
-        let updatedAt = dateFormatter.string(from: Date())
-        let arrivalString = dateFormatter.string(from: arrivalDate)
-        let soldString = soldDate.map { dateFormatter.string(from: $0) }
-        let deletedString = deletedAt.map { dateFormatter.string(from: $0) }
+        let updatedAt = isoTimestampFormatter.string(from: Date())
+        let arrivalString = formatMotorStorageDate(arrivalDate)
+        let soldString = soldDate.map { formatMotorStorageDate($0) }
+        let deletedString = deletedAt.map { formatMotorStorageDate($0) }
         try executeUnlocked(
             sql: """
             UPDATE motors
@@ -580,11 +604,11 @@ nonisolated final class DatabaseService {
     func updateSoldDate(id: Int64, soldDate: Date?) throws {
         try assertNotReadOnly()
         try inTransaction {
-            let updatedAt = dateFormatter.string(from: Date())
+            let updatedAt = isoTimestampFormatter.string(from: Date())
             try executeUnlocked(
                 sql: "UPDATE motors SET sold_date = ?, updated_at = ? WHERE id = ?;",
                 bindings: [
-                    .textOptional(soldDate.map { dateFormatter.string(from: $0) }),
+                    .textOptional(soldDate.map { formatMotorStorageDate($0) }),
                     .text(updatedAt),
                     .int64(id)
                 ]
@@ -613,11 +637,11 @@ nonisolated final class DatabaseService {
         let normalized = serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
         try inTransaction {
-            let updatedAt = dateFormatter.string(from: Date())
+            let updatedAt = isoTimestampFormatter.string(from: Date())
             try executeUnlocked(
                 sql: "UPDATE motors SET sold_date = ?, updated_at = ? WHERE serial_code = ?;",
                 bindings: [
-                    .textOptional(soldDate.map { dateFormatter.string(from: $0) }),
+                    .textOptional(soldDate.map { formatMotorStorageDate($0) }),
                     .text(updatedAt),
                     .text(normalized)
                 ]
@@ -671,8 +695,8 @@ nonisolated final class DatabaseService {
         notes: String,
         date: Date
     ) throws {
-        let createdAt = dateFormatter.string(from: Date())
-        let recordDate = dateFormatter.string(from: date)
+        let createdAt = isoTimestampFormatter.string(from: Date())
+        let recordDate = formatMotorStorageDate(date)
         try queue.sync {
             try executeUnlocked(
                 sql: """
@@ -698,8 +722,8 @@ nonisolated final class DatabaseService {
         notes: String,
         date: Date
     ) throws {
-        let createdAt = dateFormatter.string(from: Date())
-        let recordDate = dateFormatter.string(from: date)
+        let createdAt = isoTimestampFormatter.string(from: Date())
+        let recordDate = formatMotorStorageDate(date)
         // Вызывается внутри queue.sync через executeInTransactionBlock
         try executeUnlocked(
             sql: """
@@ -742,7 +766,7 @@ nonisolated final class DatabaseService {
                 sheetName: stringColumn(statement, index: 2),
                 category: stringColumn(statement, index: 3),
                 notes: stringColumn(statement, index: 4),
-                recordDate: dateFromString(stringColumn(statement, index: 5)) ?? Date(),
+                recordDate: parseMotorStorageDate(stringColumn(statement, index: 5)) ?? Date(),
                 createdAt: dateFromString(stringColumn(statement, index: 6)) ?? Date()
             )
         }
@@ -765,8 +789,9 @@ nonisolated final class DatabaseService {
         return Int(try singleValueInt64(sql: sql, bindings: bindings))
     }
     
+    /// Разбор полноценных меток времени (например `created_at` у сервисных записей и финансов).
     private func dateFromString(_ string: String) -> Date? {
-        dateFormatter.date(from: string)
+        isoTimestampFormatter.date(from: string)
     }
     
     func fetchAllServiceRecords() throws -> [ServiceRecord] {
@@ -779,7 +804,7 @@ nonisolated final class DatabaseService {
                 sheetName: stringColumn(statement, index: 2),
                 category: stringColumn(statement, index: 3),
                 notes: stringColumn(statement, index: 4),
-                recordDate: dateFromString(stringColumn(statement, index: 5)) ?? Date(),
+                recordDate: parseMotorStorageDate(stringColumn(statement, index: 5)) ?? Date(),
                 createdAt: dateFromString(stringColumn(statement, index: 6)) ?? Date()
             )
         }
@@ -795,7 +820,7 @@ nonisolated final class DatabaseService {
         // Используем INSERT OR IGNORE для избежания дубликатов
         try executeUnlocked(
             sql: "INSERT OR IGNORE INTO specific_categories (name, created_at) VALUES (?, ?);",
-            bindings: [.text(trimmed), .text(dateFormatter.string(from: Date()))]
+            bindings: [.text(trimmed), .text(isoTimestampFormatter.string(from: Date()))]
         )
         // Получаем ID (существующей или только что созданной)
         return try singleValueInt64Unlocked(
@@ -819,7 +844,7 @@ nonisolated final class DatabaseService {
                 .int64(categoryID),
                 .int64(Int64(rowIndex)),
                 .text(dataJSON),
-                .text(dateFormatter.string(from: Date()))
+                .text(isoTimestampFormatter.string(from: Date()))
             ]
         )
     }
@@ -913,7 +938,7 @@ nonisolated final class DatabaseService {
             sql: "SELECT id, name, created_at FROM specific_categories ORDER BY created_at DESC;"
         ) { statement in
             let createdAtString = stringColumn(statement, index: 2)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             return SpecificCategory(
                 id: sqlite3_column_int64(statement, 0),
                 name: stringColumn(statement, index: 1),
@@ -928,7 +953,7 @@ nonisolated final class DatabaseService {
             bindings: [.int64(id)]
         ) { statement in
             let createdAtString = stringColumn(statement, index: 2)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             return SpecificCategory(
                 id: sqlite3_column_int64(statement, 0),
                 name: stringColumn(statement, index: 1),
@@ -958,7 +983,7 @@ nonisolated final class DatabaseService {
         return try query(sql: sql, bindings: bindings) { statement in
             let dataJSON = stringColumn(statement, index: 3)
             let createdAtString = stringColumn(statement, index: 4)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             
             // Парсим JSON
             var data: [String: String] = [:]
@@ -1006,7 +1031,7 @@ nonisolated final class DatabaseService {
         ) { statement in
             let dataJSON = stringColumn(statement, index: 3)
             let createdAtString = stringColumn(statement, index: 4)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             
             // Парсим JSON
             var data: [String: String] = [:]
@@ -1046,7 +1071,7 @@ nonisolated final class DatabaseService {
         ) { statement in
             let dataJSON = stringColumn(statement, index: 3)
             let createdAtString = stringColumn(statement, index: 4)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             
             // Парсим JSON
             var data: [String: String] = [:]
@@ -1079,7 +1104,7 @@ nonisolated final class DatabaseService {
         ) { statement in
             let dataJSON = stringColumn(statement, index: 3)
             let createdAtString = stringColumn(statement, index: 4)
-            let createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+            let createdAt = isoTimestampFormatter.date(from: createdAtString) ?? Date()
             
             // Парсим JSON
             var data: [String: String] = [:]
@@ -1165,7 +1190,7 @@ nonisolated final class DatabaseService {
     func saveFeatureFlag(name: String, enabled: Bool) throws {
         try assertNotReadOnly()
         try inTransaction {
-            let updatedAt = dateFormatter.string(from: Date())
+            let updatedAt = isoTimestampFormatter.string(from: Date())
             try executeUnlocked(
                 sql: """
                 INSERT INTO feature_flags (name, enabled, updated_at)
@@ -1195,9 +1220,9 @@ nonisolated final class DatabaseService {
         let dbPath = databaseFileURL
         let backupDir = try DatabaseFileLocator.backupsDirectoryURL()
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let timestamp = dateFormatter.string(from: Date())
+        let isoTimestampFormatter = DateFormatter()
+        isoTimestampFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let timestamp = isoTimestampFormatter.string(from: Date())
 
         let backupPath = backupDir.appendingPathComponent("autocore_backup_\(timestamp).sqlite")
 
@@ -1708,7 +1733,7 @@ nonisolated final class DatabaseService {
                         VALUES (?, ?);
                         """, bindings: [
                             .text(defaultCategoryName),
-                            .text(dateFormatter.string(from: Date()))
+                            .text(isoTimestampFormatter.string(from: Date()))
                         ])
                         
                         let defaultCategoryId = try singleValueInt64(
@@ -1742,7 +1767,7 @@ nonisolated final class DatabaseService {
                         VALUES (?, ?);
                         """, bindings: [
                             .text(defaultCategoryName),
-                            .text(dateFormatter.string(from: Date()))
+                            .text(isoTimestampFormatter.string(from: Date()))
                         ])
                         
                         let defaultCategoryId = try singleValueInt64(
@@ -2186,7 +2211,7 @@ nonisolated final class DatabaseService {
     func saveSettingsJSON(_ jsonString: String) throws {
         try assertNotReadOnly()
         try queue.sync {
-            let updatedAt = dateFormatter.string(from: Date())
+            let updatedAt = isoTimestampFormatter.string(from: Date())
             try executeUnlocked(
                 sql: """
                 INSERT INTO app_settings (id, settings_json, updated_at)
@@ -2225,7 +2250,7 @@ nonisolated final class DatabaseService {
         companyId: String = "default"
     ) throws -> Int64 {
         try assertNotReadOnly()
-        let createdAtStr = dateFormatter.string(from: createdAt)
+        let createdAtStr = isoTimestampFormatter.string(from: createdAt)
         let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         return try queue.sync {
             try executeUnlocked(
@@ -2277,7 +2302,7 @@ nonisolated final class DatabaseService {
         cloudRecordId: String? = nil,
         companyId: String = "default"
     ) throws -> Int64 {
-        let createdAtStr = dateFormatter.string(from: createdAt)
+        let createdAtStr = isoTimestampFormatter.string(from: createdAt)
         let cid = companyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : companyId
         try executeUnlocked(
             sql: """
@@ -2414,13 +2439,13 @@ nonisolated final class DatabaseService {
             """,
             bindings: [.int64(id)]
         ) { statement in
-            let arrivalDate = dateFormatter.date(from: stringColumn(statement, index: 7)) ?? Date()
+            let arrivalDate = parseMotorStorageDate(stringColumn(statement, index: 7)) ?? Date()
             let soldDateString = optionalStringColumn(statement, index: 8)
-            let soldDate = soldDateString.flatMap { dateFormatter.date(from: $0) }
+            let soldDate = parseMotorStorageDate(soldDateString)
             let deletedAtString = optionalStringColumn(statement, index: 9)
-            let deletedAt = deletedAtString.flatMap { dateFormatter.date(from: $0) }
-            let createdAt = dateFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
-            let updatedAt = dateFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
+            let deletedAt = parseMotorStorageDate(deletedAtString)
+            let createdAt = isoTimestampFormatter.date(from: stringColumn(statement, index: 10)) ?? Date()
+            let updatedAt = isoTimestampFormatter.date(from: stringColumn(statement, index: 11)) ?? createdAt
             return Motor(
                 id: sqlite3_column_int64(statement, 0),
                 engineID: sqlite3_column_int64(statement, 1),
@@ -2476,12 +2501,12 @@ nonisolated final class DatabaseService {
         
         if let fromDate = filter.fromDate {
             sql += " AND created_at >= ?"
-            bindings.append(.text(dateFormatter.string(from: fromDate)))
+            bindings.append(.text(isoTimestampFormatter.string(from: fromDate)))
         }
         
         if let toDate = filter.toDate {
             sql += " AND created_at <= ?"
-            bindings.append(.text(dateFormatter.string(from: toDate)))
+            bindings.append(.text(isoTimestampFormatter.string(from: toDate)))
         }
         
         sql += " ORDER BY created_at DESC"
@@ -2620,7 +2645,7 @@ nonisolated final class DatabaseService {
         
         if let upToDate = upToDate {
             sql += " AND created_at <= ?"
-            bindings.append(.text(dateFormatter.string(from: upToDate)))
+            bindings.append(.text(isoTimestampFormatter.string(from: upToDate)))
         }
         
         sql += ";"

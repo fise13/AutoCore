@@ -15,15 +15,19 @@ struct AccountingView: View {
     #endif
 
     @StateObject private var viewModel: AccountingViewModel
-    @State private var isShowingAddExpense = false
+    @State private var isShowingAddOperation = false
     @State private var isShowingExport = false
+    @State private var isShowingAnalysis = false
+    @State private var isShowingAccountingSetup = false
     @State private var operationToEdit: FinancialOperation?
     @State private var operationToDelete: FinancialOperation?
     @State private var showClearAccountingConfirm = false
     
-    private let createExpenseUseCase: CreateExpenseOperationUseCase
     private let financialOperationRepository: FinancialOperationRepository
+    private let currentUserLogin: String
+    private let settingsService: SettingsService?
     let onSettings: () -> Void
+    let onAccountSettings: (() -> Void)?
     let onLogout: (() -> Void)?
     let currentUser: UserEntity?
     private let database: DatabaseService?
@@ -31,9 +35,11 @@ struct AccountingView: View {
     
     init(
         financialOperationRepository: FinancialOperationRepository,
+        settingsService: SettingsService? = nil,
         currentUser: String,
         recoveryState: RecoveryState?,
         onSettings: @escaping () -> Void,
+        onAccountSettings: (() -> Void)? = nil,
         onLogout: (() -> Void)?,
         userEntity: UserEntity?,
         database: DatabaseService? = nil,
@@ -41,12 +47,10 @@ struct AccountingView: View {
     ) {
         _viewModel = StateObject(wrappedValue: AccountingViewModel(financialOperationRepository: financialOperationRepository))
         self.financialOperationRepository = financialOperationRepository
-        self.createExpenseUseCase = CreateExpenseOperationUseCase(
-            financialOperationRepository: financialOperationRepository,
-            recoveryState: recoveryState,
-            currentUser: currentUser
-        )
+        self.currentUserLogin = currentUser
+        self.settingsService = settingsService
         self.onSettings = onSettings
+        self.onAccountSettings = onAccountSettings
         self.onLogout = onLogout
         self.currentUser = userEntity
         self.database = database
@@ -74,8 +78,12 @@ struct AccountingView: View {
                 })
             }
             // Операции
-            else {
+            else if selectedTab == 3 {
                 OperationsView(viewModel: viewModel, onDeleteOperation: { operation in
+                    viewModel.deleteOperation(operation)
+                })
+            } else {
+                AdvancesDetailsView(viewModel: viewModel, onDeleteOperation: { operation in
                     viewModel.deleteOperation(operation)
                 })
             }
@@ -91,29 +99,25 @@ struct AccountingView: View {
             }
         }
         .toolbar {
-            ToolbarItemGroup(placement: .principal) {
-                Picker("Раздел", selection: $selectedTab) {
-                    Text("Обзор").tag(0)
-                    Text("Касса").tag(1)
-                    Text("Расходы").tag(2)
-                    Text("Операции").tag(3)
-                }
-                .pickerStyle(.segmented)
-            }
-            
             AccountingToolbar(
+                selectedTab: selectedTab,
+                onSelectedTabChange: { selectedTab = $0 },
                 searchText: viewModel.searchText,
                 onSearchTextChange: { newText in
                     viewModel.searchText = newText
                     viewModel.refreshOperations()
                 },
-                onAddExpense: {
-                    isShowingAddExpense = true
+                onAddOperation: {
+                    isShowingAddOperation = true
                 },
                 onExport: {
                     isShowingExport = true
                 },
+                onAnalyze: {
+                    isShowingAnalysis = true
+                },
                 onSettings: onSettings,
+                onAccountSettings: onAccountSettings ?? onSettings,
                 onLogout: onLogout,
                 currentUser: currentUser
             )
@@ -142,8 +146,14 @@ struct AccountingView: View {
                 }
             }
         }
-        .sheet(isPresented: $isShowingAddExpense) {
-            AddExpenseView(viewModel: viewModel, createExpenseUseCase: createExpenseUseCase)
+        .sheet(isPresented: $isShowingAddOperation) {
+            AddFinancialOperationView(
+                viewModel: viewModel,
+                defaultCreatedByUser: currentUserLogin
+            )
+        }
+        .sheet(isPresented: $isShowingAccountingSetup) {
+            AccountingInitialSetupSheet(settingsService: settingsService)
         }
         .sheet(isPresented: $isShowingExport) {
             FinancialExportView(
@@ -152,6 +162,9 @@ struct AccountingView: View {
                     performExport(config: config)
                 }
             )
+        }
+        .sheet(isPresented: $isShowingAnalysis) {
+            AccountingAnalysisView()
         }
         .onChange(of: viewModel.searchText) { _, _ in
             viewModel.refreshOperations()
@@ -222,6 +235,11 @@ struct AccountingView: View {
             }
         }
         #endif
+        .onAppear {
+            if let settingsService, settingsService.settings.accounting.isConfigured == false {
+                isShowingAccountingSetup = true
+            }
+        }
     }
     
     private func performExport(config: FinancialExportConfig) {
@@ -289,55 +307,434 @@ struct AccountingView: View {
     }
 }
 
+private struct AccountingInitialSetupSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let settingsService: SettingsService?
+    @State private var employeesText: String = ""
+    @State private var specificsText: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Сотрудники") {
+                    Text("Укажите через запятую или с новой строки.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $employeesText)
+                        .frame(minHeight: 120)
+                }
+                Section("Специфика бухгалтерии") {
+                    Text("Например: аванс, логистика, поставщики, зарплата.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $specificsText)
+                        .frame(minHeight: 120)
+                }
+            }
+            .navigationTitle("Первичная настройка бухгалтерии")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Позже") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Сохранить") {
+                        save()
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                guard let settingsService else { return }
+                let accounting = settingsService.settings.accounting
+                employeesText = accounting.employees.joined(separator: "\n")
+                specificsText = accounting.specifics.joined(separator: "\n")
+            }
+        }
+        .frame(minWidth: 560, minHeight: 520)
+    }
+
+    private func save() {
+        guard let settingsService else { return }
+        let employees = parseList(employeesText)
+        let specifics = parseList(specificsText)
+        var accounting = settingsService.settings.accounting
+        accounting.employees = employees
+        accounting.specifics = specifics
+        accounting.isConfigured = true
+        settingsService.updateAccounting(accounting)
+    }
+
+    private func parseList(_ text: String) -> [String] {
+        let separators = CharacterSet(charactersIn: ",;\n")
+        let values = text.components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var uniq: [String] = []
+        for item in values {
+            if !uniq.contains(where: { $0.caseInsensitiveCompare(item) == .orderedSame }) {
+                uniq.append(item)
+            }
+        }
+        return uniq
+    }
+}
+
 struct AccountingOverviewView: View {
     @ObservedObject var viewModel: AccountingViewModel
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Карточки балансов
-                HStack(spacing: 16) {
-                    BalanceCard(
-                        title: "Касса",
-                        amount: viewModel.cashBalance,
-                        color: .green
-                    )
-                    
-                    BalanceCard(
-                        title: "Каспи",
-                        amount: viewModel.kaspiBalance,
-                        color: .blue
-                    )
-                }
-                .padding()
-                
-                // Сегодняшние продажи
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Сегодняшние продажи")
-                        .font(.headline)
-                    
-                    Text(formatCurrency(viewModel.todaySales))
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundStyle(.primary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(AccountingView.controlBackgroundColor)
-                .cornerRadius(8)
+#if os(macOS)
+                AccountingOverviewAppKitHeader(
+                    cashBalance: formatCurrency(viewModel.cashBalance),
+                    kaspiBalance: formatCurrency(viewModel.kaspiBalance),
+                    salesToday: formatCurrency(viewModel.todaySales)
+                )
+                .frame(height: 170)
                 .padding(.horizontal)
-                
+#else
+                // ── Балансы ──────────────────────────────────────────────
+                HStack(spacing: 16) {
+                    BalanceCard(title: "Касса",  amount: viewModel.cashBalance,  color: .green)
+                    BalanceCard(title: "Каспи",  amount: viewModel.kaspiBalance, color: .blue)
+                }
+                .padding(.horizontal)
+
+                // ── Сегодняшние продажи ──────────────────────────────────
+                OverviewMetricCard(
+                    title: "Сегодняшние продажи",
+                    value: formatCurrency(viewModel.todaySales),
+                    icon: "cart.fill",
+                    color: Color.accentColor
+                )
+                .padding(.horizontal)
+#endif
+
+                // ── Авансы ───────────────────────────────────────────────
+                AdvancesOverviewCard(viewModel: viewModel)
+                    .padding(.horizontal)
+
                 Spacer()
             }
-            .padding()
+            .padding(.vertical)
         }
     }
-    
+
     private func formatCurrency(_ amount: Decimal) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "KZT"
-        formatter.currencySymbol = "₸"
-        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
+        let f = NumberFormatter()
+        f.numberStyle = .currency; f.currencyCode = "KZT"; f.currencySymbol = "₸"
+        return f.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
+    }
+}
+
+#if os(macOS)
+private struct AccountingOverviewAppKitHeader: NSViewRepresentable {
+    let cashBalance: String
+    let kaspiBalance: String
+    let salesToday: String
+
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        container.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.88).cgColor
+
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 12
+        stack.distribution = .fillEqually
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        stack.addArrangedSubview(metricCard(title: "Касса", value: cashBalance, tint: .systemGreen))
+        stack.addArrangedSubview(metricCard(title: "Каспи", value: kaspiBalance, tint: .systemBlue))
+        stack.addArrangedSubview(metricCard(title: "Продажи сегодня", value: salesToday, tint: .controlAccentColor))
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+        ])
+
+        return container
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let stack = nsView.subviews.first(where: { $0 is NSStackView }) as? NSStackView else { return }
+        updateMetricView(stack, index: 0, value: cashBalance)
+        updateMetricView(stack, index: 1, value: kaspiBalance)
+        updateMetricView(stack, index: 2, value: salesToday)
+    }
+
+    private func metricCard(title: String, value: String, tint: NSColor) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+        card.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let valueLabel = NSTextField(labelWithString: value)
+        valueLabel.font = .systemFont(ofSize: 22, weight: .bold)
+        valueLabel.textColor = tint
+        valueLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(titleLabel)
+        card.addSubview(valueLabel)
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+
+            valueLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            valueLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            valueLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)
+        ])
+
+        return card
+    }
+
+    private func updateMetricView(_ stack: NSStackView, index: Int, value: String) {
+        guard stack.arrangedSubviews.indices.contains(index) else { return }
+        let card = stack.arrangedSubviews[index]
+        guard let valueLabel = card.subviews.compactMap({ $0 as? NSTextField }).last else { return }
+        if valueLabel.stringValue != value {
+            valueLabel.stringValue = value
+        }
+    }
+}
+#endif
+
+/// Card showing the three advance totals (received / paid / balance).
+struct AdvancesOverviewCard: View {
+    @ObservedObject var viewModel: AccountingViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Авансы", systemImage: "banknote.fill")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            HStack(spacing: 0) {
+                advanceMetric(
+                    title: "Получено",
+                    amount: viewModel.advancesReceived,
+                    color: .green
+                )
+                Divider().frame(height: 40)
+                advanceMetric(
+                    title: "Выдано",
+                    amount: viewModel.advancesPaid,
+                    color: .orange
+                )
+                Divider().frame(height: 40)
+                advanceMetric(
+                    title: "Баланс",
+                    amount: viewModel.advancesBalance,
+                    color: viewModel.advancesBalance >= 0 ? .green : .red
+                )
+            }
+
+            Divider()
+
+            HStack(spacing: 12) {
+                miniStat(
+                    title: "Операций",
+                    value: "\(viewModel.advanceInsights.totalAdvanceOperations)"
+                )
+                miniStat(
+                    title: "Людей (получено)",
+                    value: "\(viewModel.advanceInsights.uniqueReceivedParties)"
+                )
+                miniStat(
+                    title: "Людей (выдано)",
+                    value: "\(viewModel.advanceInsights.uniquePaidParties)"
+                )
+            }
+
+            HStack(spacing: 12) {
+                miniStat(
+                    title: "Средний входящий",
+                    value: formatCurrency(viewModel.advanceInsights.averageReceived)
+                )
+                miniStat(
+                    title: "Средний исходящий",
+                    value: formatCurrency(viewModel.advanceInsights.averagePaid)
+                )
+            }
+
+            if !viewModel.advanceInsights.topReceived.isEmpty || !viewModel.advanceInsights.topPaid.isEmpty {
+                Divider()
+
+                HStack(alignment: .top, spacing: 16) {
+                    partyTopList(
+                        title: "Топ получателей/клиентов",
+                        items: viewModel.advanceInsights.topReceived,
+                        color: .green
+                    )
+                    partyTopList(
+                        title: "Топ выданных авансов",
+                        items: viewModel.advanceInsights.topPaid,
+                        color: .orange
+                    )
+                }
+            }
+        }
+        .padding()
+        .background(AccountingView.controlBackgroundColor)
+        .cornerRadius(10)
+    }
+
+    private func miniStat(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private func partyTopList(
+        title: String,
+        items: [AccountingViewModel.AdvancePartyStat],
+        color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(items.prefix(5)) { item in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Text("\(item.operationsCount) оп.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(formatCurrency(item.totalAmount))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(color)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func advanceMetric(title: String, amount: Decimal, color: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(formatCurrency(amount))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func formatCurrency(_ amount: Decimal) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .currency; f.currencyCode = "KZT"; f.currencySymbol = "₸"
+        f.maximumFractionDigits = 0
+        return f.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
+    }
+}
+
+private struct AdvancesDetailsView: View {
+    @ObservedObject var viewModel: AccountingViewModel
+    let onDeleteOperation: (FinancialOperation) -> Void
+    @State private var direction: AccountingViewModel.AdvanceDirection = .all
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Тип аванса", selection: $direction) {
+                    ForEach(AccountingViewModel.AdvanceDirection.allCases) { d in
+                        Text(d.rawValue).tag(d)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
+
+                Text("Показываются операции, где в описании/категории/комментарии есть признаки аванса.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            List {
+                ForEach(viewModel.advanceOperations(direction: direction)) { operation in
+                    OperationRow(operation: operation)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                onDeleteOperation(operation)
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
+                        }
+                }
+            }
+            .listStyle(.inset)
+        }
+        .onAppear {
+            viewModel.refreshAll()
+        }
+    }
+}
+
+/// Generic one-metric card used in the overview.
+private struct OverviewMetricCard: View {
+    let title: String
+    let value: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 28))
+                .foregroundStyle(color)
+                .frame(width: 44)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(.primary)
+            }
+            Spacer()
+        }
+        .padding()
+        .background(AccountingView.controlBackgroundColor)
+        .cornerRadius(10)
     }
 }
 
@@ -377,10 +774,14 @@ struct CashboxView: View {
     
     var body: some View {
         VStack(spacing: 16) {
-            // Баланс кассы
-            HStack {
-                Text("Текущий баланс кассы")
-                    .font(.headline)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Касса")
+                        .font(.headline)
+                    Text("Текущий баланс")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text(formatCurrency(viewModel.cashBalance))
                     .font(.system(size: 24, weight: .bold))
@@ -389,7 +790,19 @@ struct CashboxView: View {
             .padding()
             .background(AccountingView.controlBackgroundColor)
             .cornerRadius(8)
-            .padding()
+            .padding(.horizontal)
+
+            HStack(spacing: 12) {
+                metricCard(title: "Операций", value: "\(viewModel.operations.filter { $0.account == .cashbox }.count)", color: .blue)
+                metricCard(
+                    title: "Сегодня",
+                    value: formatCurrency(viewModel.operations.filter {
+                        $0.account == .cashbox && Calendar.current.isDateInToday($0.createdAt)
+                    }.reduce(Decimal.zero) { $0 + $1.amount }),
+                    color: .purple
+                )
+            }
+            .padding(.horizontal)
             
             // Список операций по кассе
             List {
@@ -425,6 +838,21 @@ struct CashboxView: View {
         formatter.currencySymbol = "₸"
         return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount) ₸"
     }
+
+    private func metricCard(title: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline)
+                .foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(AccountingView.controlBackgroundColor)
+        .cornerRadius(8)
+    }
 }
 
 struct OperationsView: View {
@@ -453,6 +881,23 @@ struct OperationsView: View {
                 Spacer()
             }
             .padding()
+
+            HStack(spacing: 10) {
+                quickChip(title: "Всего", value: "\(viewModel.operations.count)", color: .secondary)
+                quickChip(
+                    title: "Приход",
+                    value: "\(viewModel.operations.filter { $0.type == .income || $0.type == .sale }.count)",
+                    color: .green
+                )
+                quickChip(
+                    title: "Расход",
+                    value: "\(viewModel.operations.filter { $0.type == .expense || $0.type == .refund }.count)",
+                    color: .red
+                )
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
             
             // Список операций
             List {
@@ -494,6 +939,17 @@ struct OperationsView: View {
         .onChange(of: viewModel.filterAccount) { _, _ in
             viewModel.refreshOperations()
         }
+    }
+
+    private func quickChip(title: String, value: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.caption.bold()).foregroundStyle(color)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(AccountingView.controlBackgroundColor)
+        .cornerRadius(8)
     }
 }
 
@@ -559,6 +1015,186 @@ private struct EditOperationSheet: View {
         }
         .padding(16)
         .frame(width: 420)
+    }
+}
+
+private struct AddFinancialOperationView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var viewModel: AccountingViewModel
+    let defaultCreatedByUser: String
+
+    @State private var type: FinancialOperationEntity.OperationType = .expense
+    @State private var amount: String = ""
+    @State private var account: FinancialOperationEntity.Account = .cashbox
+    @State private var paymentMethod: FinancialOperationEntity.PaymentMethod = .cash
+    @State private var category: String = ""
+    @State private var description: String = ""
+    @State private var comment: String = ""
+    @State private var markAsAdvance = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Тип операции")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Тип", selection: $type) {
+                                Text("Расход").tag(FinancialOperationEntity.OperationType.expense)
+                                Text("Приход").tag(FinancialOperationEntity.OperationType.income)
+                                Text("Возврат").tag(FinancialOperationEntity.OperationType.refund)
+                                Text("Перевод").tag(FinancialOperationEntity.OperationType.transfer)
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Сумма")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                TextField("0", text: $amount)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 30, weight: .semibold))
+                                Text("₸")
+                                    .font(.title2.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Счёт и способ оплаты")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Счёт", selection: $account) {
+                                Text("Касса").tag(FinancialOperationEntity.Account.cashbox)
+                                Text("Каспи").tag(FinancialOperationEntity.Account.kaspi)
+                            }
+                            .pickerStyle(.segmented)
+                            Picker("Способ", selection: $paymentMethod) {
+                                Text("Наличные").tag(FinancialOperationEntity.PaymentMethod.cash)
+                                Text("Перевод").tag(FinancialOperationEntity.PaymentMethod.transfer)
+                                Text("Смешанный").tag(FinancialOperationEntity.PaymentMethod.mixed)
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(type == .transfer)
+                        }
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Детали")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TextField("Категория (опционально)", text: $category)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Описание", text: $description, axis: .vertical)
+                                .lineLimit(2...4)
+                                .textFieldStyle(.roundedBorder)
+                            Toggle("Пометить как аванс", isOn: $markAsAdvance)
+                                .toggleStyle(.switch)
+                            TextField("Комментарий", text: $comment, axis: .vertical)
+                                .lineLimit(2...4)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+
+                    if let errorMessage {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                            Text(errorMessage)
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Color.red.opacity(0.08))
+                        .cornerRadius(8)
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("Отмена") { dismiss() }
+                        Button("Сохранить") { createOperation() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!isValid)
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Новая операция")
+            .onChange(of: type) { _, newType in
+                if newType == .transfer {
+                    paymentMethod = .transfer
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Закрыть") { dismiss() }
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 560)
+    }
+
+    private var isValid: Bool {
+        guard let amountValue = Decimal(string: amount), amountValue > 0 else { return false }
+        return !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func createOperation() {
+        guard let amountValue = Decimal(string: amount), amountValue > 0 else {
+            errorMessage = "Введите корректную сумму"
+            return
+        }
+        let baseDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseDescription.isEmpty else {
+            errorMessage = "Описание обязательно"
+            return
+        }
+
+        let finalDescription = markAsAdvance && !baseDescription.lowercased().contains("аванс")
+            ? "Аванс: \(baseDescription)"
+            : baseDescription
+        let finalComment = markAsAdvance && !comment.lowercased().contains("аванс")
+            ? [comment.trimmingCharacters(in: .whitespacesAndNewlines), "аванс"]
+                .filter { !$0.isEmpty }
+                .joined(separator: " • ")
+            : comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalCategory = category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : category.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        viewModel.createManualOperation(
+            type: type,
+            amount: amountValue,
+            account: account,
+            paymentMethod: type == .transfer ? .transfer : paymentMethod,
+            category: finalCategory,
+            description: finalDescription,
+            comment: finalComment,
+            source: sourceTitle(for: type),
+            createdByUser: defaultCreatedByUser
+        )
+        dismiss()
+    }
+
+    private func sourceTitle(for type: FinancialOperationEntity.OperationType) -> String {
+        switch type {
+        case .expense: return "Ручной расход"
+        case .income: return "Ручной приход"
+        case .refund: return "Ручной возврат"
+        case .sale: return "Ручная продажа"
+        case .transfer: return "Ручной перевод"
+        }
     }
 }
 

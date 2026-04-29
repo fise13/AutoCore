@@ -8,6 +8,7 @@ struct RootView: View {
     @ObservedObject var appViewModel: AppViewModel
     @ObservedObject var appState: AppState
     @StateObject private var importViewModel: ImportViewModel
+    @StateObject private var motorGridTableViewModel = MotorGridTableViewModel()
 
     @State private var isShowingImportPicker = false
     @State private var isShowingImportPreview = false
@@ -25,6 +26,7 @@ struct RootView: View {
     @State private var isShowingUpdateNotification = false
     @State private var isShowingUpdateSuccess = false
     @State private var isShowingSettings = false
+    @State private var settingsInitialSection: SettingsViewModel.SettingsSection = .general
     @State private var saleBannerMessage: String?
     @State private var saleBannerVisible = false
     @StateObject private var updateService = UpdateService.shared
@@ -223,7 +225,21 @@ struct RootView: View {
                         settingsService: settingsService,
                         recoveryState: appState.recoveryState,
                         databaseService: appViewModel.database,
-                        companyId: appState.authViewModel?.currentUser?.companyId
+                        companyId: appState.authViewModel?.currentUser?.companyId,
+                        currentUser: appState.authViewModel?.currentUser,
+                        onSignOut: { appState.authViewModel?.signOut() },
+                        onRefreshUser: { await appState.authViewModel?.refreshCurrentUser() },
+                        onDeleteAccount: { await appState.authViewModel?.deleteAccount() },
+                        onUpdateProfileName: { name in
+                            await appState.authViewModel?.updateProfile(displayName: name)
+                        },
+                        onChangePassword: { current, new in
+                            await appState.authViewModel?.changePassword(currentPassword: current, newPassword: new) ?? "Сервис авторизации недоступен"
+                        },
+                        onSendPasswordReset: { email in
+                            await appState.authViewModel?.sendPasswordReset(email: email) ?? "Сервис авторизации недоступен"
+                        },
+                        initialSection: settingsInitialSection
                     )
                 }
             }
@@ -316,7 +332,14 @@ struct RootView: View {
                     appViewModel.toggleSold(for: motor)
                 }
             } : nil,
-            onSettings: { isShowingSettings = true },
+            onSettings: {
+                settingsInitialSection = .general
+                isShowingSettings = true
+            },
+            onAccountSettings: {
+                settingsInitialSection = .account
+                isShowingSettings = true
+            },
             onLogout: appState.authViewModel != nil ? {
                 appState.authViewModel?.signOut()
             } : nil,
@@ -336,7 +359,7 @@ struct RootView: View {
             break
         }
     }
-    
+
     private var splitView: some View {
         NavigationSplitView {
             SidebarView(
@@ -389,9 +412,17 @@ struct RootView: View {
                         database: appViewModel.database,
                         companyId: appState.authViewModel?.currentUser?.companyId ?? "default"
                     ),
+                    settingsService: appState.settingsService,
                     currentUser: appState.authViewModel?.currentUser?.email ?? appState.authViewModel?.currentUser?.displayName ?? L10n.Common.systemUser,
                     recoveryState: appState.recoveryState,
-                    onSettings: { isShowingSettings = true },
+                    onSettings: {
+                        settingsInitialSection = .general
+                        isShowingSettings = true
+                    },
+                    onAccountSettings: {
+                        settingsInitialSection = .account
+                        isShowingSettings = true
+                    },
                     onLogout: appState.authViewModel != nil ? {
                         appState.authViewModel?.signOut()
                     } : nil,
@@ -461,6 +492,7 @@ struct RootView: View {
                 }
             default:
                 MotorListViewExcel(
+                    tableViewModel: motorGridTableViewModel,
                     motors: appViewModel.cachedFilteredMotorDTOs,
                     isLoading: appViewModel.isLoading,
                     totalCount: appViewModel.cachedFilteredMotors.count,

@@ -58,6 +58,14 @@ final class SettingsService: ObservableObject {
         newSettings.advanced = advanced
         saveSettings(newSettings)
     }
+
+    // MARK: - Accounting Settings
+
+    func updateAccounting(_ accounting: AccountingSettings) {
+        var newSettings = settings
+        newSettings.accounting = accounting
+        saveSettings(newSettings)
+    }
     
     // MARK: - Reset
     

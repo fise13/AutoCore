@@ -128,6 +128,27 @@ struct ImportStep1_SheetAnalysisView: View {
                     }
                     .padding()
                 } else {
+                    if viewModel.isAIMapping {
+                        HStack(spacing: 8) {
+                            ProgressView().scaleEffect(0.85)
+                            Text("AI сопоставляет листы с каталогом (только API)…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+                    if let note = viewModel.aiMappingNotes {
+                        ScrollView {
+                            Text(note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .multilineTextAlignment(.leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 240)
+                        .padding(.horizontal)
+                    }
                     ForEach(viewModel.sheetConfigs) { config in
                         SheetAnalysisRow(config: config)
                     }

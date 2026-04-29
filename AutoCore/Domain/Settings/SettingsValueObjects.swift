@@ -88,6 +88,15 @@ struct AdvancedSettings: Codable, Equatable {
     static let `default` = AdvancedSettings()
 }
 
+/// Настройки бухгалтерии: сотрудники и специфичные теги/направления.
+struct AccountingSettings: Codable, Equatable {
+    var isConfigured: Bool = false
+    var employees: [String] = []
+    var specifics: [String] = []
+
+    static let `default` = AccountingSettings()
+}
+
 /// Общий контейнер всех настроек
 struct AppSettings: Codable, Equatable {
     var general: GeneralSettings
@@ -95,6 +104,7 @@ struct AppSettings: Codable, Equatable {
     var importExport: ImportExportSettings
     var workflow: WorkflowSettings
     var advanced: AdvancedSettings
+    var accounting: AccountingSettings
     
     var version: Int = 1 // Для миграций настроек в будущем
     
@@ -103,6 +113,40 @@ struct AppSettings: Codable, Equatable {
         backup: .default,
         importExport: .default,
         workflow: .default,
-        advanced: .default
+        advanced: .default,
+        accounting: .default
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case general, backup, importExport, workflow, advanced, accounting, version
+    }
+
+    init(
+        general: GeneralSettings,
+        backup: BackupSettings,
+        importExport: ImportExportSettings,
+        workflow: WorkflowSettings,
+        advanced: AdvancedSettings,
+        accounting: AccountingSettings,
+        version: Int = 1
+    ) {
+        self.general = general
+        self.backup = backup
+        self.importExport = importExport
+        self.workflow = workflow
+        self.advanced = advanced
+        self.accounting = accounting
+        self.version = version
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        general = try c.decodeIfPresent(GeneralSettings.self, forKey: .general) ?? .default
+        backup = try c.decodeIfPresent(BackupSettings.self, forKey: .backup) ?? .default
+        importExport = try c.decodeIfPresent(ImportExportSettings.self, forKey: .importExport) ?? .default
+        workflow = try c.decodeIfPresent(WorkflowSettings.self, forKey: .workflow) ?? .default
+        advanced = try c.decodeIfPresent(AdvancedSettings.self, forKey: .advanced) ?? .default
+        accounting = try c.decodeIfPresent(AccountingSettings.self, forKey: .accounting) ?? .default
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+    }
 }

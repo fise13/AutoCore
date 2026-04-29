@@ -1,7 +1,5 @@
 import Foundation
 
-#if os(iOS)
-
 struct AITransactionResponse: Decodable {
     let type: String
     let date: String
@@ -128,5 +126,3 @@ enum AITransactionMapper {
         return max(0, min(1, score))
     }
 }
-
-#endif

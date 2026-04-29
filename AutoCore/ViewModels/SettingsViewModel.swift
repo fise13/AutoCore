@@ -15,29 +15,29 @@ final class SettingsViewModel: ObservableObject {
     private let recoveryState: RecoveryState?
     private let backupService: BackupService
     private let featureFlagService: FeatureFlagService
-    private var cancellables = Set<AnyCancellable>()
-    
-    // Принудительное обновление для Feature Flags
-    @Published var featureFlagsUpdateTrigger: Int = 0
     
     enum SettingsSection: String, CaseIterable {
         case general = "Общие"
-        case interface = "Интерфейс"
-        case features = "Функции"
-        case data = "Данные"
-        case importExport = "Импорт / Экспорт"
-        case workflow = "Рабочий процесс"
-        case advanced = "Продвинутые"
+        case account = "Аккаунт"
+        case interface = "Внешний вид"
+        case features = "Возможности"
+        case accounting = "Бухгалтерия"
+        case data = "Резервные копии"
+        case importExport = "Импорт и экспорт"
+        case workflow = "Поведение"
+        case advanced = "Дополнительно"
         
         var icon: String {
             switch self {
             case .general: return "gearshape.fill"
-            case .interface: return "sidebar.left"
-            case .features: return "flag.fill"
+            case .account: return "person.crop.circle.fill"
+            case .interface: return "paintbrush.fill"
+            case .features: return "sparkles"
+            case .accounting: return "rublesign.circle.fill"
             case .data: return "externaldrive.fill"
             case .importExport: return "arrow.up.arrow.down"
-            case .workflow: return "flowchart.fill"
-            case .advanced: return "wrench.and.screwdriver.fill"
+            case .workflow: return "wand.and.stars"
+            case .advanced: return "slider.horizontal.3"
             }
         }
     }
@@ -57,17 +57,6 @@ final class SettingsViewModel: ObservableObject {
         // Подписываемся на изменения настроек
         settingsService.$settings
             .assign(to: &$settings)
-        
-        // Принудительно обновляем ViewModel при изменении feature flags
-        // Это заставляет SwiftUI обновить UI при изменении флагов
-        featureFlagService.objectWillChange
-            .sink { [weak self] _ in
-                guard let self = self else { return }
-                Task { @MainActor in
-                    self.featureFlagsUpdateTrigger += 1
-                }
-            }
-            .store(in: &cancellables)
     }
     
     // MARK: - General Settings
@@ -129,6 +118,10 @@ final class SettingsViewModel: ObservableObject {
     
     func updateAdvancedSettings(_ advanced: AdvancedSettings) {
         settingsService.updateAdvanced(advanced)
+    }
+
+    func updateAccountingSettings(_ accounting: AccountingSettings) {
+        settingsService.updateAccounting(accounting)
     }
     
     func resetToDefaults() {

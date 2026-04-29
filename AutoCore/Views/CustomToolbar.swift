@@ -10,6 +10,7 @@ struct CustomToolbar: ToolbarContent {
     let onAdd: () -> Void
     let onSell: (() -> Void)?
     let onSettings: () -> Void
+    let onAccountSettings: (() -> Void)?
     let onLogout: (() -> Void)?
     let currentUser: UserEntity?
     
@@ -112,6 +113,10 @@ struct CustomToolbar: ToolbarContent {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         
                         Divider()
+
+                        if let onAccountSettings {
+                            Button("Настройки аккаунта", action: onAccountSettings)
+                        }
                         
                         Button("Sign Out", action: onLogout)
                             .keyboardShortcut("q", modifiers: [.command, .shift])
