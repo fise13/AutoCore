@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Vision
 
@@ -351,3 +352,5 @@ enum AITransactionMapper {
         return max(0, min(1, score))
     }
 }
+
+#endif

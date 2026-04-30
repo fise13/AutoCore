@@ -158,16 +158,77 @@ final class GridActiveCellBorderView: NSView {
         let border = NSBezierPath(rect: rangeRect)
         border.lineWidth = 2
         border.stroke()
+    }
+}
 
-        let handleSize = max(5, min(8, layout.rowHeight * 0.2))
-        let handleRect = CGRect(
-            x: rangeRect.maxX - handleSize * 0.5,
-            y: rangeRect.maxY - handleSize * 0.5,
-            width: handleSize,
-            height: handleSize
-        )
-        borderColor.setFill()
-        NSBezierPath(rect: handleRect).fill()
+/// Visual Excel-like fill handle rendered above active border.
+final class GridFillHandleView: NSView {
+    var onMouseDown: ((NSEvent) -> Void)?
+    var onMouseDragged: ((NSEvent) -> Void)?
+    var onMouseUp: ((NSEvent) -> Void)?
+    var fillColor: NSColor = .systemGreen
+    var strokeColor: NSColor = .white
+
+    private var tracking: NSTrackingArea?
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 1.5
+        layer?.masksToBounds = false
+        layer?.shadowOpacity = 0.35
+        layer?.shadowRadius = 1.5
+        layer?.shadowOffset = CGSize(width: 0, height: 0.5)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        fillColor.setFill()
+        NSBezierPath(rect: bounds).fill()
+        strokeColor.setStroke()
+        let border = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
+        border.lineWidth = 1
+        border.stroke()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking {
+            removeTrackingArea(tracking)
+        }
+        let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        _ = event
+        NSCursor.crosshair.push()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        _ = event
+        NSCursor.pop()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        onMouseDragged?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onMouseUp?(event)
     }
 }
 

@@ -15,6 +15,9 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
     private let logger = LoggingService.shared
     private let networkMonitor = NWPathMonitor()
     private var isConnected = true
+    private var recentPushByLocalID: [Int64: (fingerprint: String, at: Date)] = [:]
+    private var quotaBackoffUntil: Date?
+    private var quotaBackoffSeconds: TimeInterval = 15
     
     static let collectionName = "financialOperations"
     
@@ -121,8 +124,7 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                     let ns = error as NSError
                     if ns.domain == FirestoreErrorDomain,
                        ns.code == FirestoreErrorCode.resourceExhausted.rawValue {
-                        self.logger.info("Firestore observe paused: resource exhausted (quota). Listener stopped until next app launch.")
-                        continuation.finish()
+                        self.logger.info("Firestore observe throttled: resource exhausted (quota). Keeping listener alive for automatic recovery.")
                         return
                     }
                     continuation.yield([])
@@ -289,11 +291,32 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
     /// Выгружает локальные операции Mac в Firestore (чтобы iOS их видел). Документ id = "local-\(op.id)" для идемпотентности.
     func pushLocalOperationsToFirestore(companyId: String, database: DatabaseService) async throws {
         guard !companyId.isEmpty else { return }
+        guard isConnected else {
+            logger.info("Firestore PUSH local skipped: offline")
+            return
+        }
+        if let backoffUntil = quotaBackoffUntil, backoffUntil > Date() {
+            logger.info("Firestore PUSH local skipped: quota backoff active until \(backoffUntil)")
+            return
+        }
         var filter = DatabaseService.FinancialOperationFilter()
         filter.companyId = companyId
         filter.limit = 2000
         let localOps = try database.fetchFinancialOperations(filter: filter)
+        var uploadedCount = 0
+        let now = Date()
         for op in localOps {
+            if let existingCloudId = op.cloudDocumentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !existingCloudId.isEmpty {
+                // Already linked to a cloud document; updates should go through explicit updateOperation paths.
+                continue
+            }
+            let fingerprint = pushFingerprint(for: op)
+            if let recent = recentPushByLocalID[op.id],
+               recent.fingerprint == fingerprint,
+               now.timeIntervalSince(recent.at) < 120 {
+                continue
+            }
             guard let type = FinancialOperationEntity.OperationType(rawValue: op.type),
                   let paymentMethod = FinancialOperationEntity.PaymentMethod(rawValue: op.paymentMethod),
                   let account = FinancialOperationEntity.Account(rawValue: op.account) else { continue }
@@ -320,13 +343,49 @@ final class FirestoreFinancialSyncService: FinancialSyncService {
                 if op.cloudDocumentId == nil {
                     try database.setFinancialOperationCloudDocumentId(id: op.id, cloudDocumentId: pushedDocId)
                 }
+                recentPushByLocalID[op.id] = (fingerprint, Date())
+                quotaBackoffSeconds = 15
+                quotaBackoffUntil = nil
+                uploadedCount += 1
             } catch {
                 logger.error("Firestore PUSH local op id=\(op.id) failed", error: error)
+                let ns = error as NSError
+                if ns.domain == FirestoreErrorDomain,
+                   ns.code == FirestoreErrorCode.resourceExhausted.rawValue {
+                    quotaBackoffUntil = Date().addingTimeInterval(quotaBackoffSeconds)
+                    quotaBackoffSeconds = min(quotaBackoffSeconds * 2, 300)
+                    logger.info("Firestore PUSH local stopped early: resource exhausted (quota).")
+                    break
+                }
+                if ns.domain == FirestoreErrorDomain,
+                   ns.code == FirestoreErrorCode.unavailable.rawValue {
+                    quotaBackoffUntil = Date().addingTimeInterval(quotaBackoffSeconds)
+                    quotaBackoffSeconds = min(quotaBackoffSeconds * 2, 300)
+                    logger.info("Firestore PUSH local paused: firestore unavailable.")
+                    break
+                }
             }
         }
-        if !localOps.isEmpty {
-            logger.info("Firestore PUSH local: uploaded \(localOps.count) operations for companyId=\(companyId)")
+        if uploadedCount > 0 {
+            logger.info("Firestore PUSH local: uploaded \(uploadedCount) operations for companyId=\(companyId)")
         }
+    }
+
+    private func pushFingerprint(for op: DatabaseService.FinancialOperation) -> String {
+        var hasher = Hasher()
+        hasher.combine(op.type)
+        hasher.combine((op.amount as NSDecimalNumber).stringValue)
+        hasher.combine(op.paymentMethod)
+        hasher.combine(op.account)
+        hasher.combine(op.relatedMotorID ?? -1)
+        hasher.combine(op.createdAt.timeIntervalSince1970)
+        hasher.combine(op.createdByUser)
+        hasher.combine(op.comment)
+        hasher.combine(op.source)
+        hasher.combine(op.details)
+        hasher.combine(op.category ?? "")
+        hasher.combine(op.description)
+        return String(hasher.finalize())
     }
     
     func updateOperation(documentId: String, companyId: String, fields: [String: Any]) async throws {

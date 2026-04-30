@@ -196,7 +196,6 @@ struct IOSSettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Toggle(isOn: Binding(
                             get: {
-                                let _ = viewModel.featureFlagsUpdateTrigger
                                 return viewModel.isFeatureEnabled(flag)
                             },
                             set: { viewModel.setFeatureEnabled(flag, enabled: $0) }

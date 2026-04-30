@@ -32,6 +32,7 @@ struct RootView: View {
     @StateObject private var updateService = UpdateService.shared
     @State private var sidebarCustomization = SidebarCustomizationStore.shared.load()
     @State private var userConfig = UserConfigStore.shared.load()
+    @State private var lastLoadedSpecificCategoryID: Int64?
     
     // Окно для показа панелей (получается через WindowAccessor)
     @State private var hostWindow: NSWindow?
@@ -239,6 +240,9 @@ struct RootView: View {
                         onSendPasswordReset: { email in
                             await appState.authViewModel?.sendPasswordReset(email: email) ?? "Сервис авторизации недоступен"
                         },
+                        onManualCatalogResync: {
+                            await appViewModel.runManualCatalogResync()
+                        },
                         initialSection: settingsInitialSection
                     )
                 }
@@ -352,9 +356,14 @@ struct RootView: View {
     private func handleSectionChange(_ newValue: NavigationSection) {
         switch newValue {
         case .sold:
-            appViewModel.refreshSoldMotors()
+            if appViewModel.soldMotors.isEmpty {
+                appViewModel.refreshSoldMotors()
+            }
         case .specificCategory(let categoryID):
-            appViewModel.refreshServiceRecords(categoryID: categoryID)
+            if appViewModel.specificRecords.isEmpty || lastLoadedSpecificCategoryID != categoryID {
+                appViewModel.refreshServiceRecords(categoryID: categoryID)
+                lastLoadedSpecificCategoryID = categoryID
+            }
         default:
             break
         }
@@ -404,8 +413,14 @@ struct RootView: View {
     }
     
     private var contentView: some View {
-        Group {
+        ZStack {
+            allMotorsContentView
+                .opacity(appViewModel.selectedSection == .all ? 1 : 0)
+                .allowsHitTesting(appViewModel.selectedSection == .all)
+
             switch appViewModel.selectedSection {
+            case .all:
+                EmptyView()
             case .accounting:
                 AccountingView(
                     financialOperationRepository: FinancialOperationRepositoryImpl(
@@ -465,6 +480,7 @@ struct RootView: View {
             case .specificCategory(let categoryID):
                 if let category = appViewModel.specificCategories.first(where: { $0.id == categoryID }) {
                     ServiceRecordsView(
+                        categoryID: categoryID,
                         records: [],
                         specificRecords: appViewModel.specificRecords,
                         searchText: appViewModel.serviceRecordsSearchText,
@@ -481,6 +497,7 @@ struct RootView: View {
                             appViewModel.deleteSpecificRecord(recordID: recordID)
                         }
                     )
+                    .id("specific_\(categoryID)")
                 } else {
                     EmptyStateView(
                         icon: "doc.text.magnifyingglass",
@@ -490,43 +507,47 @@ struct RootView: View {
                         action: nil
                     )
                 }
-            default:
-                MotorListViewExcel(
-                    tableViewModel: motorGridTableViewModel,
-                    motors: appViewModel.cachedFilteredMotorDTOs,
-                    isLoading: appViewModel.isLoading,
-                    totalCount: appViewModel.cachedFilteredMotors.count,
-                    userConfig: userConfig,
-                    onToggleSold: { motorID in
-                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
-                            appViewModel.toggleSold(for: motor)
-                        }
-                    },
-                    onLoadMore: {
-                        appViewModel.loadMoreMotorsIfNeeded()
-                    },
-                    onDuplicate: { motorID in
-                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
-                            duplicateMotor(motor)
-                        }
-                    },
-                    onExportSelected: { motorID in
-                        if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
-                            exportSelectedMotor(motor)
-                        }
-                    },
-                    onOpenDetails: { motorID in
-                        appViewModel.selectedMotorID = motorID
-                    },
-                    onSaveMotorRow: { motorID, draft in
-                        appViewModel.saveMotorInlineRow(motorID: motorID, draft: draft)
-                    },
-                    onCreateMotor: { draft in
-                        appViewModel.createMotorInline(draft: draft)
-                    }
-                )
             }
         }
+    }
+
+    private var allMotorsContentView: some View {
+        MotorListViewExcel(
+            tableViewModel: motorGridTableViewModel,
+            motors: appViewModel.cachedFilteredMotorDTOs,
+            isLoading: appViewModel.isLoading,
+            totalCount: appViewModel.cachedFilteredMotors.count,
+            userConfig: userConfig,
+            onToggleSold: { motorID in
+                if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
+                    appViewModel.toggleSold(for: motor)
+                }
+            },
+            onLoadMore: {
+                appViewModel.loadMoreMotorsIfNeeded()
+            },
+            onDuplicate: { motorID in
+                if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
+                    duplicateMotor(motor)
+                }
+            },
+            onExportSelected: { motorID in
+                if let motor = appViewModel.cachedFilteredMotors.first(where: { $0.id == motorID }) {
+                    exportSelectedMotor(motor)
+                }
+            },
+            onOpenDetails: { motorID in
+                appViewModel.selectedMotorID = motorID
+            },
+            onSaveMotorRow: { motorID, draft in
+                appViewModel.saveMotorInlineRow(motorID: motorID, draft: draft)
+            },
+            onCreateMotor: { draft in
+                appViewModel.createMotorInline(draft: draft)
+            },
+            cacheKey: "all",
+            isActive: appViewModel.selectedSection == .all
+        )
     }
     
     // Inspector убран - детали открываются через sheet или отдельное окно

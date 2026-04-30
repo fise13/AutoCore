@@ -2,7 +2,9 @@ import SwiftUI
 import AuthenticationServices
 import CryptoKit
 import Security
+#if os(macOS)
 import AppKit
+#endif
 
 #if os(macOS)
 

@@ -37,9 +37,10 @@ struct GridRowState: Equatable {
 /// 2D motor sheet data (no formulas). Not ObservableObject — host view drives refresh.
 final class GridDataStore {
     private(set) var rows: [GridRowState] = []
+    private(set) var revision: Int = 0
     private let baseVisibleEmptyRows = 120
-    private let expandBatchSize = 80
-    private let expandThreshold = 24
+    private let expandBatchSize = 120
+    private let expandThreshold = 48
 
     var rowCount: Int { rows.count }
 
@@ -47,6 +48,7 @@ final class GridDataStore {
         let need = minimum - rows.count
         guard need > 0 else { return }
         rows.append(contentsOf: (0..<need).map { _ in GridRowState(motorID: nil, draft: .empty) })
+        revision &+= 1
     }
 
     func row(at index: Int) -> GridRowState? {
@@ -70,6 +72,8 @@ final class GridDataStore {
 
     func setValue(_ text: String, at address: GridCellAddress) {
         guard address.row >= 0 && address.row < rows.count else { return }
+        let oldValue = value(at: address)
+        guard oldValue != text else { return }
         switch address.column {
         case MotorSheetColumn.engineNumber.rawValue: rows[address.row].draft.serialCode = text
         case MotorSheetColumn.configuration.rawValue: rows[address.row].draft.configuration = text
@@ -80,6 +84,7 @@ final class GridDataStore {
         case MotorSheetColumn.soldDate.rawValue: rows[address.row].draft.soldDate = text
         default: break
         }
+        revision &+= 1
     }
 
     func motorID(atRow row: Int) -> Int64? {
@@ -87,8 +92,13 @@ final class GridDataStore {
         return rows[row].motorID
     }
 
-    /// Reload from server DTOs + filler empty rows. `mergePending` returns draft override per motor id if any.
-    func reload(from motors: [MotorRowDTO], mergePending: (Int64) -> GridMotorRowDraft?) {
+    /// Reload from server DTOs + pending create drafts + filler empty rows.
+    /// `mergePending` returns draft override per motor id if any.
+    func reload(
+        from motors: [MotorRowDTO],
+        mergePending: (Int64) -> GridMotorRowDraft?,
+        pendingCreateDrafts: [GridMotorRowDraft] = []
+    ) {
         var mapped: [GridRowState] = motors.map { dto in
             let serverDraft = GridMotorRowDraft(
                 serialCode: dto.serialCode,
@@ -102,18 +112,29 @@ final class GridDataStore {
             let draft = mergePending(dto.id) ?? serverDraft
             return GridRowState(motorID: dto.id, draft: draft)
         }
+
+        if !pendingCreateDrafts.isEmpty {
+            mapped.append(contentsOf: pendingCreateDrafts.map { draft in
+                GridRowState(motorID: nil, draft: draft)
+            })
+        }
+
         let fillers = max(baseVisibleEmptyRows - mapped.count, 0)
         if fillers > 0 {
             mapped.append(contentsOf: (0..<fillers).map { _ in GridRowState(motorID: nil, draft: .empty) })
         }
         rows = mapped
+        revision &+= 1
     }
 
-    func expandIfNeeded(visibleRowIndex: Int) {
-        guard !rows.isEmpty else { return }
+    @discardableResult
+    func expandIfNeeded(visibleRowIndex: Int) -> Bool {
+        guard !rows.isEmpty else { return false }
         let distanceToEnd = rows.count - visibleRowIndex - 1
-        guard distanceToEnd <= expandThreshold else { return }
+        guard distanceToEnd <= expandThreshold else { return false }
         rows.append(contentsOf: (0..<expandBatchSize).map { _ in GridRowState(motorID: nil, draft: .empty) })
+        revision &+= 1
+        return true
     }
 
     /// Paste tab/newline separated text starting at origin; returns affected rects (row,col pairs).

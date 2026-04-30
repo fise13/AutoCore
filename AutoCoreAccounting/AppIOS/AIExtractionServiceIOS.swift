@@ -89,7 +89,7 @@ final class AIExtractionService {
                           userInfo: [NSLocalizedDescriptionKey: "API ключ не настроен (OPENROUTER_API_KEY)."])
         }
 
-        let ocrText = cgImage.map { extractTextWithVision(from: $0) }
+        let ocrText = cgImage.flatMap { extractTextWithVision(from: $0) }
 
         do {
             let response = try await requestAI(input: "IMAGE_BASE64:\n\(base64)")

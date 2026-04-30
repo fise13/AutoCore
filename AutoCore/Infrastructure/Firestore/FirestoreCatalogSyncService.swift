@@ -6,6 +6,7 @@ import FirebaseFirestore
 final class FirestoreCatalogSyncService {
     private let db = Firestore.firestore()
     private let logger = LoggingService.shared
+    private let maxBatchOperations = 400
 
     private var lastFingerprint: String?
 
@@ -36,10 +37,19 @@ final class FirestoreCatalogSyncService {
         if lastFingerprint == fingerprint {
             return
         }
-        lastFingerprint = fingerprint
 
         do {
-            let batch = db.batch()
+            var batch = db.batch()
+            var operationsInBatch = 0
+            var commitCount = 0
+
+            func flushBatch() async throws {
+                guard operationsInBatch > 0 else { return }
+                try await batch.commit()
+                commitCount += 1
+                batch = db.batch()
+                operationsInBatch = 0
+            }
 
             for brand in brands {
                 let ref = db.collection("brands").document("\(normalizedCompanyId)_brand_\(brand.id)")
@@ -49,6 +59,10 @@ final class FirestoreCatalogSyncService {
                     "name": brand.name,
                     "updatedAt": FieldValue.serverTimestamp()
                 ], forDocument: ref, merge: true)
+                operationsInBatch += 1
+                if operationsInBatch >= maxBatchOperations {
+                    try await flushBatch()
+                }
             }
 
             for engine in engines {
@@ -60,6 +74,10 @@ final class FirestoreCatalogSyncService {
                     "code": engine.code,
                     "updatedAt": FieldValue.serverTimestamp()
                 ], forDocument: ref, merge: true)
+                operationsInBatch += 1
+                if operationsInBatch >= maxBatchOperations {
+                    try await flushBatch()
+                }
             }
 
             for motor in motors {
@@ -91,16 +109,21 @@ final class FirestoreCatalogSyncService {
                     motorData["deletedAt"] = FieldValue.delete()
                 }
                 batch.setData(motorData, forDocument: ref, merge: true)
+                operationsInBatch += 1
+                if operationsInBatch >= maxBatchOperations {
+                    try await flushBatch()
+                }
             }
 
-            try await batch.commit()
+            try await flushBatch()
             try await pruneRemovedDocuments(
                 companyId: normalizedCompanyId,
                 brands: brands,
                 engines: engines,
                 motors: motors
             )
-            logger.info("Firestore catalog sync success: brands=\(brands.count), engines=\(engines.count), motors=\(motors.count)")
+            lastFingerprint = fingerprint
+            logger.info("Firestore catalog sync success: brands=\(brands.count), engines=\(engines.count), motors=\(motors.count), commits=\(commitCount)")
         } catch {
             logger.error("Firestore catalog sync failed", error: error)
         }
@@ -151,8 +174,19 @@ final class FirestoreCatalogSyncService {
             .whereField("companyId", isEqualTo: companyId)
             .getDocuments()
 
-        let batch = db.batch()
+        var batch = db.batch()
         var deleteCount = 0
+        var operationsInBatch = 0
+        var commitCount = 0
+
+        func flushBatch() async throws {
+            guard operationsInBatch > 0 else { return }
+            try await batch.commit()
+            commitCount += 1
+            batch = db.batch()
+            operationsInBatch = 0
+        }
+
         for doc in snapshot.documents {
             let data = doc.data()
             let localId = (data["localId"] as? NSNumber)?.int64Value ?? data["localId"] as? Int64
@@ -160,12 +194,16 @@ final class FirestoreCatalogSyncService {
             if !keptLocalIds.contains(localId) {
                 batch.deleteDocument(doc.reference)
                 deleteCount += 1
+                operationsInBatch += 1
+                if operationsInBatch >= maxBatchOperations {
+                    try await flushBatch()
+                }
             }
         }
 
         if deleteCount > 0 {
-            try await batch.commit()
-            logger.info("Firestore catalog prune: collection=\(collection), deleted=\(deleteCount), companyId=\(companyId)")
+            try await flushBatch()
+            logger.info("Firestore catalog prune: collection=\(collection), deleted=\(deleteCount), commits=\(commitCount), companyId=\(companyId)")
         }
     }
 }

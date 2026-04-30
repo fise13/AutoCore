@@ -90,14 +90,18 @@ struct AutoCoreApp: App {
             // Меню "Правка"
             CommandGroup(replacing: .undoRedo) {
                 Button(L10n.Menu.undo) {
-                    if let appViewModel = appState.appViewModel {
+                    if let windowUndoManager = NSApp.keyWindow?.undoManager, windowUndoManager.canUndo {
+                        windowUndoManager.undo()
+                    } else if let appViewModel = appState.appViewModel {
                         appViewModel.undoManager.undo()
                     }
                 }
                 .keyboardShortcut("z", modifiers: .command)
 
                 Button(L10n.Menu.redo) {
-                    if let appViewModel = appState.appViewModel {
+                    if let windowUndoManager = NSApp.keyWindow?.undoManager, windowUndoManager.canRedo {
+                        windowUndoManager.redo()
+                    } else if let appViewModel = appState.appViewModel {
                         appViewModel.undoManager.redo()
                     }
                 }

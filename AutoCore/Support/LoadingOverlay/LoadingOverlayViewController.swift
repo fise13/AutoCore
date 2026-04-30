@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 @MainActor
@@ -173,3 +174,5 @@ private extension CALayer {
         transform = CATransform3DMakeScale(value, value, 1)
     }
 }
+
+#endif

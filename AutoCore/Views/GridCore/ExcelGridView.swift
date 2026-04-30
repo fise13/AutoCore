@@ -28,6 +28,7 @@ final class ExcelGridView: NSView {
     private let selectionFillView = GridSelectionFillView()
     private let lineView = GridLineDrawingView()
     private let activeBorderView = GridActiveCellBorderView()
+    private let fillHandleView = GridFillHandleView()
 
     private let headerContainer = NSView()
     private let headerDocumentView = NSView()
@@ -56,7 +57,7 @@ final class ExcelGridView: NSView {
     /// Двойной Ctrl/Cmd+A — сначала только данные, затем весь лист.
     private var lastSelectAllAt: Date?
     private var isFillHandleDragging = false
-    private var fillSourceRange: GridRange?
+    private var fillSourceCell: GridCellAddress?
     private var fillTargetRange: GridRange?
 
     private var boundsObservation: NSObjectProtocol?
@@ -109,10 +110,21 @@ final class ExcelGridView: NSView {
         documentView.addSubview(selectionFillView)
         documentView.addSubview(lineView)
         documentView.addSubview(activeBorderView)
+        documentView.addSubview(fillHandleView)
 
         selectionFillView.layout = layout
         lineView.layout = layout
         activeBorderView.layout = layout
+        fillHandleView.isHidden = true
+        fillHandleView.onMouseDown = { [weak self] event in
+            self?.startFillHandleDrag(with: event)
+        }
+        fillHandleView.onMouseDragged = { [weak self] event in
+            self?.updateFillHandleDrag(with: event)
+        }
+        fillHandleView.onMouseUp = { [weak self] event in
+            self?.finishFillHandleDrag(with: event)
+        }
         applyTheme()
 
         editor.attach(host: documentView)
@@ -339,10 +351,18 @@ final class ExcelGridView: NSView {
         }
     }
 
-    func reload(motors: [MotorRowDTO], mergePending: (Int64) -> GridMotorRowDraft?) {
+    func reload(
+        motors: [MotorRowDTO],
+        mergePending: (Int64) -> GridMotorRowDraft?,
+        pendingCreateDrafts: [GridMotorRowDraft] = []
+    ) {
         editor.endEditing(commit: false)
         baselineDTOs = Dictionary(uniqueKeysWithValues: motors.map { ($0.id, $0) })
-        store.reload(from: motors, mergePending: mergePending)
+        store.reload(
+            from: motors,
+            mergePending: mergePending,
+            pendingCreateDrafts: pendingCreateDrafts
+        )
         if store.rowCount > 0 {
             let start = GridCellAddress(row: 0, column: defaultEditableVisualColumn())
             selection = SelectionController(start: start)
@@ -363,6 +383,13 @@ final class ExcelGridView: NSView {
         redrawOverlays()
     }
 
+    /// Forces visible cells to reconfigure without waiting for scroll events.
+    func refreshVisibleContent() {
+        syncHeaderScroll()
+        layoutVisibleCells()
+        redrawOverlays()
+    }
+
     private func resizeDocument() {
         let w = layout.totalWidth()
         let h = CGFloat(store.rowCount) * layout.rowHeight
@@ -371,6 +398,7 @@ final class ExcelGridView: NSView {
         selectionFillView.frame = documentView.bounds
         lineView.frame = documentView.bounds
         activeBorderView.frame = documentView.bounds
+        documentView.addSubview(fillHandleView, positioned: .above, relativeTo: activeBorderView)
         lineView.rowCount = store.rowCount
         lineView.columnCount = layout.columnCount
         lineView.layout = layout
@@ -402,17 +430,17 @@ final class ExcelGridView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let pt = convertToDocument(event)
-        guard let cell = layout.cellAt(point: pt, rowCount: store.rowCount) else { return }
+        guard let cell = cellAtOrNearestEdge(for: pt) else { return }
         handlePointerDrag(event: event, cell: cell)
     }
 
     override func mouseUp(with event: NSEvent) {
         let pt = convertToDocument(event)
-        guard let cell = layout.cellAt(point: pt, rowCount: store.rowCount) else {
+        guard let cell = cellAtOrNearestEdge(for: pt) else {
             if isFillHandleDragging {
                 isFillHandleDragging = false
                 applyFillHandleIfNeeded()
-                fillSourceRange = nil
+                fillSourceCell = nil
                 fillTargetRange = nil
                 return
             }
@@ -421,6 +449,17 @@ final class ExcelGridView: NSView {
             return
         }
         handlePointerUp(event: event, cell: cell)
+    }
+
+    private func cellAtOrNearestEdge(for point: CGPoint) -> GridCellAddress? {
+        if let exact = layout.cellAt(point: point, rowCount: store.rowCount) {
+            return exact
+        }
+        guard store.rowCount > 0, layout.columnCount > 0 else { return nil }
+        let clampedX = min(max(point.x, 0), max(0, layout.totalWidth() - 1))
+        let totalHeight = CGFloat(store.rowCount) * layout.rowHeight
+        let clampedY = min(max(point.y, 0), max(0, totalHeight - 1))
+        return layout.cellAt(point: CGPoint(x: clampedX, y: clampedY), rowCount: store.rowCount)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -883,9 +922,7 @@ final class ExcelGridView: NSView {
             totalRows: store.rowCount
         )
         if let lastVisibleRow = rowRange.last {
-            let oldCount = store.rowCount
-            store.expandIfNeeded(visibleRowIndex: lastVisibleRow)
-            if store.rowCount != oldCount {
+            if store.expandIfNeeded(visibleRowIndex: lastVisibleRow) {
                 resizeDocument()
                 rowRange = viewport.visibleRowRange(
                     scrollY: visible.origin.y,
@@ -989,6 +1026,7 @@ final class ExcelGridView: NSView {
         activeBorderView.selection = selection
         selectionFillView.needsDisplay = true
         activeBorderView.needsDisplay = true
+        updateFillHandleFrame()
     }
 
     private func redrawAll() {
@@ -1009,6 +1047,9 @@ final class ExcelGridView: NSView {
         selectionFillView.selectionColor = palette.selectionFill
         selectionFillView.activeColor = palette.activeFill
         activeBorderView.borderColor = palette.activeBorder
+        fillHandleView.fillColor = NSColor.systemGreen
+        fillHandleView.strokeColor = NSColor.white.withAlphaComponent(0.95)
+        fillHandleView.needsDisplay = true
         for field in headerFields {
             field.textColor = palette.textSecondary
         }
@@ -1021,13 +1062,6 @@ final class ExcelGridView: NSView {
 
     private func handlePointerDown(event: NSEvent, cell: GridCellAddress) {
         window?.makeFirstResponder(self)
-        let point = convertToDocument(event)
-        if isPointInFillHandle(point) {
-            isFillHandleDragging = true
-            fillSourceRange = selection.primaryRange
-            fillTargetRange = selection.primaryRange
-            return
-        }
         if event.clickCount == 2 {
             editor.endEditing(commit: false)
             beginEditIfEditable(cell)
@@ -1053,12 +1087,12 @@ final class ExcelGridView: NSView {
 
     private func handlePointerDrag(event: NSEvent, cell: GridCellAddress) {
         _ = event
-        if isFillHandleDragging, let source = fillSourceRange {
+        if isFillHandleDragging, let source = fillSourceCell {
             let target = GridRange(
-                minRow: min(source.minRow, cell.row),
-                maxRow: max(source.maxRow, cell.row),
-                minColumn: min(source.minColumn, cell.column),
-                maxColumn: max(source.maxColumn, cell.column)
+                minRow: source.row,
+                maxRow: max(source.row, cell.row),
+                minColumn: source.column,
+                maxColumn: source.column
             )
             fillTargetRange = target
             selection.selectRange(target, active: GridCellAddress(row: target.minRow, column: target.minColumn))
@@ -1075,9 +1109,11 @@ final class ExcelGridView: NSView {
         if isFillHandleDragging {
             _ = cell
             isFillHandleDragging = false
-            fillTargetRange = fillTargetRange ?? fillSourceRange
+            if fillTargetRange == nil, let source = fillSourceCell {
+                fillTargetRange = GridRange(minRow: source.row, maxRow: source.row, minColumn: source.column, maxColumn: source.column)
+            }
             applyFillHandleIfNeeded()
-            fillSourceRange = nil
+            fillSourceCell = nil
             fillTargetRange = nil
             return
         }
@@ -1115,8 +1151,9 @@ final class ExcelGridView: NSView {
         r = max(0, min(max(0, store.rowCount - 1), r))
         c = max(0, min(max(0, layout.columnCount - 1), c))
         if deltaRow > 0, r >= store.rowCount - 1 {
-            store.expandIfNeeded(visibleRowIndex: r)
-            resizeDocument()
+            if store.expandIfNeeded(visibleRowIndex: r) {
+                resizeDocument()
+            }
         }
         let next = GridCellAddress(row: r, column: c)
         selection.moveHead(to: next, extendSelection: extend)
@@ -1137,8 +1174,9 @@ final class ExcelGridView: NSView {
             } else {
                 r += 1
                 c = editable.first ?? c
-                store.expandIfNeeded(visibleRowIndex: r)
-                resizeDocument()
+                if store.expandIfNeeded(visibleRowIndex: r) {
+                    resizeDocument()
+                }
             }
         } else {
             if let idx = editable.firstIndex(of: c), idx > 0 {
@@ -1242,120 +1280,92 @@ final class ExcelGridView: NSView {
         return chars
     }
 
-    private func fillHandleRect(for range: GridRange) -> CGRect {
-        let topLeft = layout.cellFrame(row: range.minRow, column: range.minColumn)
-        let bottomRight = layout.cellFrame(row: range.maxRow, column: range.maxColumn)
-        let rangeRect = topLeft.union(bottomRight).insetBy(dx: 0.5, dy: 0.5)
-        let size = max(5, min(8, layout.rowHeight * 0.2))
+    private func updateFillHandleFrame() {
+        guard selection != nil else {
+            fillHandleView.isHidden = true
+            return
+        }
+        let active = selection.activeCell
+        guard let modelColumn = modelColumn(forVisual: active.column), modelColumn.isEditable else {
+            fillHandleView.isHidden = true
+            return
+        }
+        fillHandleView.isHidden = false
+        fillHandleView.frame = fillHandleRect(for: active)
+    }
+
+    private func fillHandleRect(for cell: GridCellAddress) -> CGRect {
+        let cellRect = layout.cellFrame(row: cell.row, column: cell.column).insetBy(dx: 0.5, dy: 0.5)
+        let size: CGFloat = 10
         return CGRect(
-            x: rangeRect.maxX - size * 0.5,
-            y: rangeRect.maxY - size * 0.5,
+            x: cellRect.maxX - size,
+            y: cellRect.maxY - size,
             width: size,
             height: size
         )
     }
 
-    private func isPointInFillHandle(_ point: CGPoint) -> Bool {
-        fillHandleRect(for: selection.primaryRange).insetBy(dx: -4, dy: -4).contains(point)
+    private func startFillHandleDrag(with event: NSEvent) {
+        _ = event
+        let active = selection.activeCell
+        guard let modelColumn = modelColumn(forVisual: active.column), modelColumn.isEditable else { return }
+        window?.makeFirstResponder(self)
+        editor.endEditing(commit: true)
+        isFillHandleDragging = true
+        fillSourceCell = active
+        fillTargetRange = GridRange(minRow: active.row, maxRow: active.row, minColumn: active.column, maxColumn: active.column)
+    }
+
+    private func updateFillHandleDrag(with event: NSEvent) {
+        guard isFillHandleDragging, let source = fillSourceCell else { return }
+        let point = convertToDocument(event)
+        let clampedY = min(max(point.y, 0), max(0, documentView.bounds.maxY - 1))
+        let probePoint = CGPoint(x: layout.cellFrame(row: source.row, column: source.column).midX, y: clampedY)
+        guard let hovered = layout.cellAt(point: probePoint, rowCount: store.rowCount) else { return }
+        let targetRow = max(source.row, hovered.row)
+        let target = GridRange(minRow: source.row, maxRow: targetRow, minColumn: source.column, maxColumn: source.column)
+        fillTargetRange = target
+        selection.selectRange(target, active: GridCellAddress(row: source.row, column: source.column))
+        redrawOverlays()
+    }
+
+    private func finishFillHandleDrag(with event: NSEvent) {
+        _ = event
+        guard isFillHandleDragging else { return }
+        isFillHandleDragging = false
+        if fillTargetRange == nil, let source = fillSourceCell {
+            fillTargetRange = GridRange(minRow: source.row, maxRow: source.row, minColumn: source.column, maxColumn: source.column)
+        }
+        applyFillHandleIfNeeded()
+        fillSourceCell = nil
+        fillTargetRange = nil
     }
 
     private func applyFillHandleIfNeeded() {
-        guard let source = fillSourceRange, let target = fillTargetRange else { return }
-        guard source != target else {
+        guard let sourceCell = fillSourceCell, let target = fillTargetRange else { return }
+        guard target.maxRow > sourceCell.row else {
             redrawOverlays()
             return
         }
 
-        let sourceHeight = max(1, source.maxRow - source.minRow + 1)
-        let sourceWidth = max(1, source.maxColumn - source.minColumn + 1)
-        var ops: [(GridCellAddress, String)] = []
-        ops.reserveCapacity((target.maxRow - target.minRow + 1) * (target.maxColumn - target.minColumn + 1))
+        guard let sourceModel = modelColumn(forVisual: sourceCell.column), sourceModel.isEditable else { return }
+        let sourceAddress = GridCellAddress(row: sourceCell.row, column: sourceModel.rawValue)
+        let sourceValue = store.value(at: sourceAddress)
 
-        for row in target.minRow...target.maxRow {
-            for visualCol in target.minColumn...target.maxColumn {
-                let visualAddress = GridCellAddress(row: row, column: visualCol)
-                if source.contains(visualAddress) { continue }
-                guard let modelCol = modelColumn(forVisual: visualCol), modelCol.isEditable else { continue }
-                let srcRow = source.minRow + ((row - source.minRow) % sourceHeight)
-                let srcVisualCol = source.minColumn + ((visualCol - source.minColumn) % sourceWidth)
-                guard let srcModelCol = modelColumn(forVisual: srcVisualCol), srcModelCol.isEditable else { continue }
-                let sourceValues: [String] = (source.minRow...source.maxRow).map { sourceRow in
-                    store.value(at: GridCellAddress(row: sourceRow, column: srcModelCol.rawValue))
-                }
-                let relativeRow = row - source.minRow
-                let fillValue = computeFillValue(sourceValues: sourceValues, relativeRow: relativeRow)
-                if fillValue.isEmpty {
-                    let srcValue = store.value(at: GridCellAddress(row: srcRow, column: srcModelCol.rawValue))
-                    ops.append((GridCellAddress(row: row, column: modelCol.rawValue), srcValue))
-                } else {
-                    ops.append((GridCellAddress(row: row, column: modelCol.rawValue), fillValue))
-                }
-            }
+        var ops: [(GridCellAddress, String)] = []
+        ops.reserveCapacity(max(0, target.maxRow - sourceCell.row))
+        for row in (sourceCell.row + 1)...target.maxRow {
+            ops.append((GridCellAddress(row: row, column: sourceModel.rawValue), sourceValue))
         }
+
         guard !ops.isEmpty else {
             redrawOverlays()
             return
         }
         commandBus.applyBatch(ops, actionName: "Fill")
         delegate?.excelGridDataDidChange(self)
-        selection.selectRange(target, active: GridCellAddress(row: target.minRow, column: target.minColumn))
+        selection.selectRange(target, active: sourceCell)
         redrawAll()
-    }
-
-    private func computeFillValue(sourceValues: [String], relativeRow: Int) -> String {
-        guard !sourceValues.isEmpty else { return "" }
-        if sourceValues.count >= 2,
-           let first = parseNumber(sourceValues[0]),
-           let second = parseNumber(sourceValues[1]) {
-            let step = second - first
-            let value = first + (step * Double(relativeRow))
-            return formatNumber(value)
-        }
-        if sourceValues.count >= 2,
-           let datePattern = detectDatePattern(sourceValues: sourceValues) {
-            let next = Calendar.current.date(byAdding: .day, value: datePattern.dayStep * relativeRow, to: datePattern.start) ?? datePattern.start
-            return formatDate(next, format: datePattern.format)
-        }
-        let index = ((relativeRow % sourceValues.count) + sourceValues.count) % sourceValues.count
-        return sourceValues[index]
-    }
-
-    private func parseNumber(_ text: String) -> Double? {
-        let normalized = text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespacesAndNewlines)
-        return Double(normalized)
-    }
-
-    private func formatNumber(_ value: Double) -> String {
-        if value.rounded() == value {
-            return String(Int(value))
-        }
-        return String(format: "%.4f", value).replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
-    }
-
-    private func formatDate(_ date: Date, format: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = format
-        return formatter.string(from: date)
-    }
-
-    private func detectDatePattern(sourceValues: [String]) -> (start: Date, dayStep: Int, format: String)? {
-        let supportedFormats = ["dd.MM.yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd.MM.yy", "d.M.yyyy", "d.M.yy"]
-        for format in supportedFormats {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = format
-            let parsed = sourceValues.compactMap { formatter.date(from: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            guard parsed.count == sourceValues.count, let first = parsed.first else { continue }
-            let dayStep: Int
-            if parsed.count >= 2 {
-                dayStep = Calendar.current.dateComponents([.day], from: parsed[0], to: parsed[1]).day ?? 0
-            } else {
-                dayStep = 0
-            }
-            return (first, dayStep, format)
-        }
-        return nil
     }
 }
 

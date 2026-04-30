@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // MARK: - Shared invoice models (iOS + macOS)
@@ -86,3 +87,5 @@ struct ScannedInvoice: Identifiable {
         self.aiConfidence  = aiConfidence
     }
 }
+
+#endif

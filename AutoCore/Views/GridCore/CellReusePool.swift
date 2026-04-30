@@ -110,11 +110,7 @@ final class PooledGridCellView: NSView {
         _ = event
         setHovered(true)
         onHoverChanged?(address, true)
-        if isEditableCell {
-            NSCursor.iBeam.set()
-        } else {
-            NSCursor.arrow.set()
-        }
+        NSCursor.crosshair.set()
     }
 
     override func mouseExited(with event: NSEvent) {

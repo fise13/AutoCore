@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import Combine
 
@@ -635,6 +636,8 @@ struct MotorListViewExcel: View {
     let onOpenDetails: ((Int64) -> Void)?
     let onSaveMotorRow: (Int64, MotorInlineDraft) -> Void
     let onCreateMotor: ((MotorInlineDraft) -> Void)?
+    let cacheKey: String
+    let isActive: Bool
     @ObservedObject private var viewModel: MotorGridTableViewModel
 
     @FocusState private var focusedCell: GridFocusID?
@@ -715,7 +718,9 @@ struct MotorListViewExcel: View {
         onExportSelected: ((Int64) -> Void)?,
         onOpenDetails: ((Int64) -> Void)?,
         onSaveMotorRow: @escaping (Int64, MotorInlineDraft) -> Void,
-        onCreateMotor: ((MotorInlineDraft) -> Void)? = nil
+        onCreateMotor: ((MotorInlineDraft) -> Void)? = nil,
+        cacheKey: String = "all",
+        isActive: Bool = true
     ) {
         self._viewModel = ObservedObject(wrappedValue: tableViewModel)
         self.motors = motors
@@ -729,6 +734,8 @@ struct MotorListViewExcel: View {
         self.onOpenDetails = onOpenDetails
         self.onSaveMotorRow = onSaveMotorRow
         self.onCreateMotor = onCreateMotor
+        self.cacheKey = cacheKey
+        self.isActive = isActive
     }
 
     var body: some View {
@@ -754,6 +761,8 @@ struct MotorListViewExcel: View {
             }
             ZStack(alignment: .bottomTrailing) {
                 ExcelGridMotorSheetRepresentable(
+                    cacheKey: cacheKey,
+                    isActive: isActive,
                     motors: motors,
                     userConfig: userConfig,
                     zoom: tableZoom,
@@ -1243,16 +1252,6 @@ private struct MotorGridEditableCell: View {
     }
 }
 
-struct MotorInlineDraft {
-    let serialCode: String
-    let configuration: String
-    let notes: String
-    let quantity: String
-    let transmission: String
-    let arrivalDate: String
-    let soldDate: String
-}
-
 struct GridFocusID: Hashable {
     let rowID: UUID
     let column: ColumnKey
@@ -1431,3 +1430,5 @@ final class MotorGridRowViewModel: ObservableObject, Identifiable {
         soldDate = dto.soldDate
     }
 }
+
+#endif

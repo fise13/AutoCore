@@ -1,10 +1,3 @@
-//
-//  InvoiceModels.swift
-//  AutoCore
-//
-//  Модели для сканирования накладных (OCR).
-//
-
 import Foundation
 
 enum InvoiceDocumentType: String, CaseIterable, Identifiable, Codable {
@@ -42,7 +35,6 @@ enum InvoiceDocumentKind: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// Строка накладной: название, количество, цена.
 struct InvoiceItem: Identifiable, Equatable {
     var id: String {
         "\(name)-\(quantity)-\(price)-\(motorSerial ?? "")-\(selectedMotorLocalId ?? -1)-\(selectedMotorCloudId ?? "")"
@@ -54,11 +46,10 @@ struct InvoiceItem: Identifiable, Equatable {
     var selectedMotorLocalId: Int64? = nil
     var selectedMotorCloudId: String? = nil
     var selectedMotorSerial: String? = nil
-    
+
     var total: Decimal { quantity * price }
 }
 
-/// Результат сканирования накладной.
 struct ScannedInvoice: Identifiable {
     let id: String
     var scannedAt: Date
@@ -69,11 +60,11 @@ struct ScannedInvoice: Identifiable {
     var rawText: String?
     var aiWarnings: [String]
     var aiConfidence: Double?
-    
+
     var totalAmount: Decimal {
         items.reduce(0) { $0 + $1.total }
     }
-    
+
     init(
         id: String = UUID().uuidString,
         scannedAt: Date = Date(),

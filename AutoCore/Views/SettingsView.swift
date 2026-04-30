@@ -24,6 +24,7 @@ struct SettingsView: View {
     let onUpdateProfileName: ((String?) async -> Void)?
     let onChangePassword: ((String, String) async -> String?)?
     let onSendPasswordReset: ((String) async -> String?)?
+    let onManualCatalogResync: (() async -> String)?
     let initialSection: SettingsViewModel.SettingsSection
     private let backupRepository = BackupRepositoryLocalImpl()
     
@@ -41,6 +42,7 @@ struct SettingsView: View {
         onUpdateProfileName: ((String?) async -> Void)? = nil,
         onChangePassword: ((String, String) async -> String?)? = nil,
         onSendPasswordReset: ((String) async -> String?)? = nil,
+        onManualCatalogResync: (() async -> String)? = nil,
         initialSection: SettingsViewModel.SettingsSection = .general
     ) {
         self.backupService = backupService
@@ -56,6 +58,7 @@ struct SettingsView: View {
         self.onUpdateProfileName = onUpdateProfileName
         self.onChangePassword = onChangePassword
         self.onSendPasswordReset = onSendPasswordReset
+        self.onManualCatalogResync = onManualCatalogResync
         self.initialSection = initialSection
         _selectedSection = State(initialValue: initialSection)
         _viewModel = StateObject(wrappedValue: SettingsViewModel(
@@ -126,7 +129,12 @@ struct SettingsView: View {
         Group {
             switch selectedSection {
             case .general:
-                GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
+                GeneralSettingsView(
+                    viewModel: viewModel,
+                    databaseService: databaseService,
+                    companyId: companyId,
+                    onManualCatalogResync: onManualCatalogResync
+                )
             case .account:
                 AccountSettingsView(
                     currentUser: currentUser,
@@ -168,7 +176,12 @@ struct SettingsView: View {
     private func settingsDetailForSection(_ section: SettingsViewModel.SettingsSection) -> some View {
         switch section {
         case .general:
-            GeneralSettingsView(viewModel: viewModel, databaseService: databaseService, companyId: companyId)
+            GeneralSettingsView(
+                viewModel: viewModel,
+                databaseService: databaseService,
+                companyId: companyId,
+                onManualCatalogResync: onManualCatalogResync
+            )
         case .account:
             AccountSettingsView(
                 currentUser: currentUser,
@@ -651,10 +664,13 @@ private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     let databaseService: DatabaseService
     let companyId: String?
+    let onManualCatalogResync: (() async -> String)?
     @State private var showClearAccountingConfirm = false
     @State private var showDeleteAllDataConfirm = false
     @State private var isDeleting = false
+    @State private var isManualResyncing = false
     @State private var statusMessage: String?
+    @State private var manualResyncMessage: String?
 
     var body: some View {
         ScrollView {
@@ -733,6 +749,32 @@ private struct GeneralSettingsView: View {
                     Text("Удалит все моторы, категории, бухгалтерию и записи на этом устройстве. Копии в облаке остаются.")
                 }
 
+                Section {
+                    if isManualResyncing {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Выполняем cloud resync каталога…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Button {
+                        runManualCatalogResync()
+                    } label: {
+                        Label("Ручной Cloud Resync каталога", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(isManualResyncing)
+
+                    if let manualResyncMessage {
+                        Text(manualResyncMessage)
+                            .foregroundColor(manualResyncMessage.contains("Не удалось") ? .red : .green)
+                    }
+                } header: {
+                    Text("Облачный каталог (Firestore)")
+                } footer: {
+                    Text("Запускает полный ручной sync brands/engines/motors в Firestore. Используйте как repair/resync по необходимости.")
+                }
+
                 if let statusMessage {
                     Section {
                         Text(statusMessage)
@@ -787,6 +829,23 @@ private struct GeneralSettingsView: View {
                     isDeleting = false
                     statusMessage = "Не удалось удалить данные: \(error.localizedDescription)"
                 }
+            }
+        }
+    }
+
+    private func runManualCatalogResync() {
+        guard let onManualCatalogResync else {
+            manualResyncMessage = "Не удалось запустить resync: обработчик не настроен"
+            return
+        }
+
+        isManualResyncing = true
+        manualResyncMessage = nil
+        Task {
+            let result = await onManualCatalogResync()
+            await MainActor.run {
+                isManualResyncing = false
+                manualResyncMessage = result
             }
         }
     }

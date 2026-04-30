@@ -99,6 +99,9 @@ final class AppViewModel: ObservableObject {
     private let pageSize = 500
     private var currentPage = 0
     private var currentSoldPage = 0
+    private var financialSyncTask: Task<Void, Never>?
+    private var lastFinancialSyncAt: Date?
+    private var isManualCatalogResyncInProgress = false
     
     // MARK: - Date Formatter (общий для производительности)
     private static let displayDateFormatter: DateFormatter = {
@@ -332,8 +335,16 @@ final class AppViewModel: ObservableObject {
     func syncFinancialData() {
         let cid = companyId
         guard cid != "default" && !cid.isEmpty else { return }
-        Task.detached { [weak self] in
+        if let lastSync = lastFinancialSyncAt, Date().timeIntervalSince(lastSync) < 10 {
+            return
+        }
+        if let task = financialSyncTask, !task.isCancelled {
+            return
+        }
+        lastFinancialSyncAt = Date()
+        financialSyncTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.financialSyncTask = nil }
             do {
                 try await self.firestoreFinancialSync.pushLocalOperationsToFirestore(companyId: cid, database: self.database)
                 try await self.firestoreFinancialSync.pullAndMergeFinancialOperations(companyId: cid, database: self.database)
@@ -341,6 +352,45 @@ final class AppViewModel: ObservableObject {
             } catch {
                 LoggingService.shared.error("macOS financial sync failed", error: error)
             }
+        }
+    }
+
+    func runManualCatalogResync() async -> String {
+        let normalizedCompanyId = companyId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCompanyId.isEmpty, normalizedCompanyId != "default" else {
+            return "Не удалось запустить resync: companyId не задан"
+        }
+        guard !isManualCatalogResyncInProgress else {
+            return "Resync уже выполняется"
+        }
+
+        isManualCatalogResyncInProgress = true
+        defer { isManualCatalogResyncInProgress = false }
+
+        do {
+            let database = self.database
+            var allFilter = DatabaseService.MotorFilter(availability: .all)
+            allFilter.companyId = normalizedCompanyId
+
+            let payload = try await Task.detached(priority: .userInitiated) {
+                let brands = try database.fetchBrands()
+                let engines = try database.fetchEngines(brandID: nil)
+                let motors = try database.fetchMotors(filter: allFilter, limit: nil, offset: 0)
+                return (brands, engines, motors)
+            }.value
+
+            await firestoreCatalogSync.pushSnapshot(
+                companyId: normalizedCompanyId,
+                brands: payload.0,
+                engines: payload.1,
+                motors: payload.2
+            )
+
+            return "Cloud resync завершен: brands=\(payload.0.count), engines=\(payload.1.count), motors=\(payload.2.count)"
+        } catch {
+            let message = "Не удалось выполнить cloud resync: \(error.localizedDescription)"
+            errorMessage = message
+            return message
         }
     }
 
@@ -419,12 +469,8 @@ final class AppViewModel: ObservableObject {
                     self.setHasMoreSoldPages(soldMotors.count >= self.pageSize)
                 }
 
-                await self.firestoreCatalogSync.pushSnapshot(
-                    companyId: companyId,
-                    brands: brands,
-                    engines: engines,
-                    motors: allMotors
-                )
+                // Full catalog sync выполняется только вручную (manual repair/resync),
+                // чтобы не создавать массовые write при каждом refreshAll().
             } catch {
                 await MainActor.run { [weak self] in
                     self?.setError("Ошибка базы данных: \(error.localizedDescription)")
@@ -1360,9 +1406,11 @@ final class AppViewModel: ObservableObject {
     private func applyLocalMotorUpdate(_ updatedMotor: Motor) {
         if let idx = allMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
             allMotors[idx] = updatedMotor
+            allMotors = allMotors
         }
         if let soldIdx = soldMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
             soldMotors[soldIdx] = updatedMotor
+            soldMotors = soldMotors
         }
 
         let hasActiveFilters =
@@ -1375,6 +1423,8 @@ final class AppViewModel: ObservableObject {
            let filteredIdx = cachedFilteredMotors.firstIndex(where: { $0.id == updatedMotor.id }) {
             cachedFilteredMotors[filteredIdx] = updatedMotor
             cachedFilteredMotorDTOs[filteredIdx] = MotorRowDTO.from(motor: updatedMotor, dateFormatter: Self.displayDateFormatter)
+            cachedFilteredMotors = cachedFilteredMotors
+            cachedFilteredMotorDTOs = cachedFilteredMotorDTOs
             return
         }
 
@@ -1535,6 +1585,7 @@ final class AppViewModel: ObservableObject {
                             createdAt: record.createdAt
                         )
                         self.specificRecords[index] = updatedRecord
+                        self.specificRecords = self.specificRecords
                     }
                 }
             } catch {

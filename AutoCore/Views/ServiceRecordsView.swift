@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 #if os(macOS)
 
 struct ServiceRecordsView: View {
+    let categoryID: Int64
     let records: [ServiceRecord]
     let specificRecords: [DatabaseService.SpecificRecord]
     let searchText: String
@@ -18,6 +19,7 @@ struct ServiceRecordsView: View {
     @State private var tableZoom: CGFloat = 1.0
     @State private var saveStatusText: String = "Все сохранено"
     @State private var appKitHasUnsavedChanges = false
+    @State private var gridSnapshot: GridSnapshot = .empty
 
     fileprivate static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -26,40 +28,22 @@ struct ServiceRecordsView: View {
         return formatter
     }()
 
-    private var specificRows: [RecordDisplayItem] {
-        records.map(RecordDisplayItem.fromServiceRecord) + specificRecords.map(RecordDisplayItem.fromSpecificRecord)
-    }
+    private var motorsForGrid: [MotorRowDTO] { gridSnapshot.motorsForGrid }
+    private var byRecordID: [Int64: RecordDisplayItem] { gridSnapshot.byRecordID }
+    private var headerMapping: SpecificExcelHeaderMapping { gridSnapshot.headerMapping }
 
-    private var filteredSpecificRows: [RecordDisplayItem] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return specificRows }
-        return specificRows.filter { item in
-            item.data.contains { key, value in
-                key.lowercased().contains(q) || value.lowercased().contains(q)
-            }
+    private var snapshotID: String {
+        var hasher = Hasher()
+        hasher.combine(searchText)
+        hasher.combine(records.count)
+        for record in records {
+            hasher.combine(record)
         }
-    }
-
-    private var motorsForGrid: [MotorRowDTO] {
-        let mapping = headerMapping
-        return filteredSpecificRows.map { item in
-            let slots = mapping.slotKeys
-            return MotorRowDTO(
-                id: item.id,
-                serialCode: slots.indices.contains(0) ? (item.data[slots[0]] ?? "") : "",
-                configuration: slots.indices.contains(1) ? (item.data[slots[1]] ?? "") : "",
-                notes: slots.indices.contains(2) ? (item.data[slots[2]] ?? "") : "",
-                quantity: slots.indices.contains(3) ? (item.data[slots[3]] ?? "") : "",
-                transmission: slots.indices.contains(4) ? (item.data[slots[4]] ?? "") : "",
-                arrivalDate: slots.indices.contains(5) ? (item.data[slots[5]] ?? "") : "",
-                soldDate: slots.indices.contains(6) ? (item.data[slots[6]] ?? "") : "",
-                isSold: false
-            )
+        hasher.combine(specificRecords.count)
+        for record in specificRecords {
+            hasher.combine(record)
         }
-    }
-
-    private var byRecordID: [Int64: RecordDisplayItem] {
-        Dictionary(uniqueKeysWithValues: filteredSpecificRows.map { ($0.id, $0) })
+        return "\(hasher.finalize())"
     }
 
     var body: some View {
@@ -79,6 +63,7 @@ struct ServiceRecordsView: View {
 
                 ZStack(alignment: .bottomTrailing) {
                     ExcelGridMotorSheetRepresentable(
+                        cacheKey: "service_\(categoryID)",
                         motors: motorsForGrid,
                         userConfig: headerMapping.userConfig,
                         zoom: tableZoom,
@@ -123,6 +108,13 @@ struct ServiceRecordsView: View {
             get: { searchText },
             set: { onSearchTextChange($0) }
         ), prompt: "Поиск по номеру двигателя, данным, листу")
+        .task(id: snapshotID) {
+            gridSnapshot = GridSnapshot.build(
+                records: records,
+                specificRecords: specificRecords,
+                searchText: searchText
+            )
+        }
     }
 
     private var zoomControl: some View {
@@ -168,8 +160,56 @@ struct ServiceRecordsView: View {
         }
     }
 
-    private var headerMapping: SpecificExcelHeaderMapping {
-        SpecificExcelHeaderMapping.build(from: filteredSpecificRows)
+}
+
+private struct GridSnapshot {
+    let headerMapping: SpecificExcelHeaderMapping
+    let motorsForGrid: [MotorRowDTO]
+    let byRecordID: [Int64: RecordDisplayItem]
+
+    static let empty = GridSnapshot(
+        headerMapping: SpecificExcelHeaderMapping.build(from: []),
+        motorsForGrid: [],
+        byRecordID: [:]
+    )
+
+    static func build(
+        records: [ServiceRecord],
+        specificRecords: [DatabaseService.SpecificRecord],
+        searchText: String
+    ) -> GridSnapshot {
+        let specificRows = records.map(RecordDisplayItem.fromServiceRecord) + specificRecords.map(RecordDisplayItem.fromSpecificRecord)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filteredRows: [RecordDisplayItem]
+        if query.isEmpty {
+            filteredRows = specificRows
+        } else {
+            filteredRows = specificRows.filter { item in
+                item.data.contains { key, value in
+                    key.lowercased().contains(query) || value.lowercased().contains(query)
+                }
+            }
+        }
+
+        let mapping = SpecificExcelHeaderMapping.build(from: filteredRows)
+        let motors = filteredRows.map { item in
+            MotorRowDTO(
+                id: item.id,
+                serialCode: mapping.valueForSlot(0, in: item.data),
+                configuration: mapping.valueForSlot(1, in: item.data),
+                notes: mapping.valueForSlot(2, in: item.data),
+                quantity: mapping.valueForSlot(3, in: item.data),
+                transmission: mapping.valueForSlot(4, in: item.data),
+                arrivalDate: mapping.valueForSlot(5, in: item.data),
+                soldDate: mapping.valueForSlot(6, in: item.data),
+                isSold: false
+            )
+        }
+        return GridSnapshot(
+            headerMapping: mapping,
+            motorsForGrid: motors,
+            byRecordID: Dictionary(uniqueKeysWithValues: filteredRows.map { ($0.id, $0) })
+        )
     }
 }
 
@@ -187,45 +227,79 @@ private struct SpecificExcelHeaderMapping {
     private static let numberLikeNormalizedTokens: Set<String> = [
         "колво", "количество", "qty", "quantity", "цена", "price", "сумма", "amount"
     ]
+    private static let semanticAliases: [[String]] = [
+        ["номердвигателя", "номер", "serial", "serialcode", "enginenumber", "двигатель"],
+        ["комплектация", "configuration", "config"],
+        ["особыеотметки", "примечание", "заметка", "notes", "note", "comment", "описание"],
+        ["колво", "количество", "qty", "quantity", "count"],
+        ["коробка", "transmission", "кпп", "at", "mt"],
+        ["датаприхода", "arrivaldate", "приход", "датыприхода", "datein"],
+        ["датапродажи", "solddate", "продажа", "датыпродажи", "dateout"]
+    ]
 
     static func build(from rows: [RecordDisplayItem]) -> SpecificExcelHeaderMapping {
         // 1) Prefer the explicit column order saved during import (`_columnOrder` JSON array).
         if let savedOrder = extractSavedColumnOrder(from: rows), !savedOrder.isEmpty {
-            return makeMapping(from: savedOrder)
+            let allKeys = availableKeys(from: rows)
+            let merged = savedOrder + allKeys.filter { !savedOrder.contains($0) }
+            return makeMapping(from: merged)
         }
 
         // 2) Fallback: derive an order from the actual data keys.
         var frequency: [String: Int] = [:]
-        var firstSeenIndex: [String: Int] = [:]
-        var counter = 0
         for row in rows {
             for key in row.data.keys where !key.hasPrefix("_") && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 frequency[key, default: 0] += 1
-                if firstSeenIndex[key] == nil {
-                    firstSeenIndex[key] = counter
-                    counter += 1
-                }
             }
         }
         let orderedKeys = Array(frequency.keys).sorted { lhs, rhs in
             let lCount = frequency[lhs, default: 0]
             let rCount = frequency[rhs, default: 0]
             if lCount != rCount { return lCount > rCount }
-            return (firstSeenIndex[lhs] ?? Int.max) < (firstSeenIndex[rhs] ?? Int.max)
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
         return makeMapping(from: orderedKeys)
     }
 
     private static func makeMapping(from orderedKeys: [String]) -> SpecificExcelHeaderMapping {
-        var slots: [String] = Array(orderedKeys.prefix(slotCount))
+        let canonicalColumnIDs = [
+            "engineNumber",
+            "configuration",
+            "notes",
+            "quantity",
+            "transmission",
+            "arrivalDate",
+            "soldDate"
+        ]
+        var remaining = orderedKeys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("_") }
+        var slots = Array(repeating: "", count: slotCount)
+
+        for slotIndex in 0..<slotCount {
+            let aliases = semanticAliases[safe: slotIndex] ?? []
+            if let idx = remaining.firstIndex(where: { key in
+                let normalized = normalizeKey(key)
+                return aliases.contains(where: { normalized.contains($0) || $0.contains(normalized) })
+            }) {
+                slots[slotIndex] = remaining.remove(at: idx)
+            }
+        }
+
+        for slotIndex in 0..<slotCount where slots[slotIndex].isEmpty {
+            if !remaining.isEmpty {
+                slots[slotIndex] = remaining.removeFirst()
+            }
+        }
+
         while slots.count < slotCount {
             slots.append("")
         }
 
         let columns: [ColumnConfig] = (0..<slotCount).map { i in
             let title = slots[i].isEmpty ? placeholderTitles[i] : slots[i]
-            let id = slots[i].isEmpty ? "field\(i)" : "col_\(slots[i])"
-            return ColumnConfig(id: id, title: title, type: detectType(for: slots[i]), isVisible: true)
+            let canonicalID = canonicalColumnIDs[safe: i] ?? "engineNumber"
+            return ColumnConfig(id: canonicalID, title: title, type: detectType(for: slots[i]), isVisible: true)
         }
 
         return SpecificExcelHeaderMapping(
@@ -238,6 +312,24 @@ private struct SpecificExcelHeaderMapping {
                 businessType: .custom
             )
         )
+    }
+
+    private static func availableKeys(from rows: [RecordDisplayItem]) -> [String] {
+        var keys: Set<String> = []
+        for row in rows {
+            for key in row.data.keys where !key.hasPrefix("_") && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                keys.insert(key)
+            }
+        }
+        return Array(keys).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private static func normalizeKey(_ key: String) -> String {
+        key
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
     }
 
     private static func extractSavedColumnOrder(from rows: [RecordDisplayItem]) -> [String]? {
@@ -269,6 +361,31 @@ private struct SpecificExcelHeaderMapping {
             return .number
         }
         return .text
+    }
+
+    func valueForSlot(_ index: Int, in data: [String: String]) -> String {
+        guard slotKeys.indices.contains(index) else { return "" }
+        let key = slotKeys[index]
+        let raw = data[key] ?? ""
+        if index == 5 || index == 6 {
+            return Self.normalizeExcelDateIfNeeded(raw)
+        }
+        return raw
+    }
+
+    private static func normalizeExcelDateIfNeeded(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.contains(".") || trimmed.contains("/") || trimmed.contains("-") {
+            return trimmed
+        }
+        guard let serial = Double(trimmed), serial > 20000, serial < 90000 else { return trimmed }
+        let unix = (serial - 25569.0) * 86400.0
+        let date = Date(timeIntervalSince1970: unix)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yyyy"
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.string(from: date)
     }
 }
 

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 final class LoadingOverlayView: NSView {
@@ -116,3 +117,5 @@ final class LoadingOverlayView: NSView {
         ])
     }
 }
+
+#endif

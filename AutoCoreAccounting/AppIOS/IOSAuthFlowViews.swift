@@ -17,6 +17,8 @@ struct IOSAuthRootView: View {
             Group {
                 if let authViewModel = appState.authViewModel {
                     switch authViewModel.authState {
+                    case .loading:
+                        IOSSplashView(title: L10n.IOS.loading)
                     case .authenticated:
                         authenticatedContent(authViewModel: authViewModel)
                     case .authenticating:
@@ -138,87 +140,43 @@ struct IOSEnsureCompanyView: View {
 struct IOSSplashView: View {
     let title: String
 
-    @State private var iconScale: CGFloat = 0.5
-    @State private var iconOpacity: Double = 0
-    @State private var titleOpacity: Double = 0
-    @State private var subtitleOpacity: Double = 0
-    @State private var pulseScale: CGFloat = 1
-
     var body: some View {
         ZStack {
             IOSPalette.loginGradient
                 .ignoresSafeArea()
 
-            VStack(spacing: 28) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.15))
-                        .frame(width: 120, height: 120)
-                        .scaleEffect(pulseScale)
+            Color.black.opacity(0.22)
+                .ignoresSafeArea()
 
-                    Image(systemName: "building.columns.circle.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.white, .white.opacity(0.85)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 4)
-                }
-                .scaleEffect(iconScale)
-                .opacity(iconOpacity)
+            VStack(spacing: 14) {
+                Image("LoginLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 74, height: 74)
 
-                VStack(spacing: 10) {
-                    Text("AutoCore")
-                        .font(IOSDesign.Typography.largeTitle)
-                        .foregroundStyle(.white)
-                    Text("Accounting")
-                        .font(IOSDesign.Typography.subtitle)
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .opacity(titleOpacity)
+                Text("AutoCore")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
 
-                HStack(spacing: 4) {
-                    Text(title)
-                        .font(IOSDesign.Typography.subtitle)
-                        .foregroundStyle(.white.opacity(0.85))
-                    loadingDots
-                }
-                .opacity(subtitleOpacity)
-            }
-            .padding(Spacing.x3)
-        }
-        .onAppear {
-            withAnimation(IOSMotion.appear) {
-                iconScale = 1
-                iconOpacity = 1
-            }
-            withAnimation(IOSMotion.appear.delay(0.2)) {
-                titleOpacity = 1
-            }
-            withAnimation(IOSMotion.appear.delay(0.4)) {
-                subtitleOpacity = 1
-            }
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                pulseScale = 1.15
-            }
-        }
-    }
+                Text(title)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.86))
 
-    private var loadingDots: some View {
-        TimelineView(.periodic(from: .now, by: 0.4)) { timeline in
-            let phase = Int(timeline.date.timeIntervalSince1970 / 0.4) % 3
-            HStack(spacing: 6) {
-                ForEach(0..<3, id: \.self) { index in
-                    Circle()
-                        .fill(Color.white.opacity(phase == index ? 1 : 0.35))
-                        .frame(width: 6, height: 6)
-                        .scaleEffect(phase == index ? 1.2 : 1)
-                }
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity)
             }
-            .animation(IOSMotion.quick, value: phase)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(width: 340)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.22), radius: 14, x: 0, y: 4)
+            .padding(.horizontal, 20)
         }
     }
 }
